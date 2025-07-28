@@ -1,4 +1,4 @@
-import { getSandbox, Sandbox, parseSSEStream, type ExecEvent, ExecuteResponse, WriteFileResponse, ReadFileResponse } from '@cloudflare/sandbox';
+import { getSandbox, Sandbox, parseSSEStream, type ExecEvent, ExecuteResponse } from '@cloudflare/sandbox';
 
 export { Sandbox as SandboxService };
 import {
@@ -26,7 +26,10 @@ import {
     TemplateInfo,
     TemplateDetails,
     GitHubInitRequest, GitHubInitResponse, GitHubPushRequest, GitHubPushResponse,
-    GetLogsResponse
+    GetLogsResponse,
+    ListInstancesResponse,
+    SaveInstanceResponse,
+    ResumeInstanceResponse
 } from './types';
 import { createObjectLogger } from './logger';
 import { env } from 'cloudflare:workers'
@@ -57,6 +60,8 @@ export interface StreamEvent {
 export class SandboxSdkClient extends BaseSandboxService {
     private sandbox: SandboxType;
     private hostname: string;
+    private metadataCache = new Map<string, InstanceMetadata>();
+    
     constructor(sandboxId: string, hostname: string) {
         super(sandboxId);
         this.sandbox = this.getSandbox();
@@ -85,11 +90,11 @@ export class SandboxSdkClient extends BaseSandboxService {
     }
 
     private getRuntimeErrorFile(instanceId: string): string {
-        return `${instanceId}/runtime_errors.json`;
+        return `${instanceId}-runtime_errors.json`;
     }
 
     private getInstanceMetadataFile(instanceId: string): string {
-        return `${instanceId}/metadata.json`;
+        return `${instanceId}-metadata.json`;
     }
 
     private async executeCommand(instanceId: string, command: string, timeout?: number): Promise<ExecuteResponse> {
@@ -124,9 +129,17 @@ export class SandboxSdkClient extends BaseSandboxService {
     }
 
     private async getInstanceMetadata(instanceId: string): Promise<InstanceMetadata | null> {
+        // Check cache first
+        if (this.metadataCache.has(instanceId)) {
+            return this.metadataCache.get(instanceId)!;
+        }
+        
+        // Cache miss - read from disk
         try {
             const metadataFile = await this.getSandbox().readFile(this.getInstanceMetadataFile(instanceId));
-            return JSON.parse(metadataFile.content) as InstanceMetadata;
+            const metadata = JSON.parse(metadataFile.content) as InstanceMetadata;
+            this.metadataCache.set(instanceId, metadata); // Cache it
+            return metadata;
         } catch {
             return null;
         }
@@ -134,20 +147,18 @@ export class SandboxSdkClient extends BaseSandboxService {
 
     private async storeInstanceMetadata(instanceId: string, metadata: InstanceMetadata): Promise<void> {
         await this.getSandbox().writeFile(this.getInstanceMetadataFile(instanceId), JSON.stringify(metadata));
+        this.metadataCache.set(instanceId, metadata); // Update cache
+    }
+
+    private invalidateMetadataCache(instanceId: string): void {
+        this.metadataCache.delete(instanceId);
     }
 
     private async checkTemplateExists(templateName: string): Promise<boolean> {
-        // Execute ls command to check if template exists, and check if package.json exists
+        // Single command to check if template directory and package.json both exist
         const sandbox = this.getSandbox();
-        const lsResult = await sandbox.exec(`ls ${templateName}`);
-        if (lsResult.exitCode !== 0) {
-            return false;
-        }
-        const packageJsonResult = await sandbox.exec(`ls ${templateName}/package.json`);
-        if (packageJsonResult.exitCode !== 0) {
-            return false;
-        }
-        return true;
+        const checkResult = await sandbox.exec(`test -f ${templateName}/package.json && echo "exists" || echo "missing"`);
+        return checkResult.exitCode === 0 && checkResult.stdout.trim() === "exists";
     }
 
     private async ensureTemplateExists(templateName: string) {
@@ -279,6 +290,85 @@ export class SandboxSdkClient extends BaseSandboxService {
     // ==========================================
     // INSTANCE LIFECYCLE
     // ==========================================
+
+    async listAllInstances(): Promise<ListInstancesResponse> {
+        try {
+            this.logger.info('Listing all instances using bulk metadata read');
+            
+            const sandbox = this.getSandbox();
+            
+            // Use a single command to find all metadata files and read their contents
+            const bulkResult = await sandbox.exec(`find . -name "*-metadata.json" -type f -exec sh -c 'echo "===FILE:$1==="; cat "$1"' _ {} \\;`);
+            
+            if (bulkResult.exitCode !== 0) {
+                return {
+                    success: true,
+                    instances: [],
+                    count: 0
+                };
+            }
+            
+            const instances: InstanceDetails[] = [];
+            
+            // Parse the combined output
+            const sections = bulkResult.stdout.split('===FILE:').filter(section => section.trim());
+            
+            for (const section of sections) {
+                try {
+                    const lines = section.trim().split('\n');
+                    if (lines.length < 2) continue;
+                    
+                    // First line contains the file path, remaining lines contain the JSON
+                    const filePath = lines[0].replace('===', '');
+                    const jsonContent = lines.slice(1).join('\n');
+                    
+                    // Extract instance ID from filename (remove ./ prefix and -metadata.json suffix)
+                    const instanceId = filePath.replace('./', '').replace('-metadata.json', '');
+                    
+                    // Parse metadata
+                    const metadata = JSON.parse(jsonContent) as InstanceMetadata;
+                    
+                    // Update cache with the metadata we just read
+                    this.metadataCache.set(instanceId, metadata);
+                    
+                    // Create lightweight instance details from metadata
+                    const instanceDetails: InstanceDetails = {
+                        runId: instanceId,
+                        templateName: metadata.templateName,
+                        startTime: new Date(metadata.startTime),
+                        uptime: Math.floor((Date.now() - new Date(metadata.startTime).getTime()) / 1000),
+                        directory: instanceId,
+                        serviceDirectory: instanceId,
+                        previewURL: metadata.previewUrl,
+                        processId: metadata.processId,
+                        // Skip file tree and runtime errors for efficiency
+                        fileTree: undefined,
+                        runtimeErrors: undefined
+                    };
+                    
+                    instances.push(instanceDetails);
+                } catch (error) {
+                    this.logger.warn(`Failed to process metadata section`, error);
+                }
+            }
+            
+            this.logger.info(`Successfully listed ${instances.length} instances using bulk operation`);
+            
+            return {
+                success: true,
+                instances,
+                count: instances.length
+            };
+        } catch (error) {
+            this.logger.error('listAllInstances', error);
+            return {
+                success: false,
+                instances: [],
+                count: 0,
+                error: `Failed to list instances: ${error instanceof Error ? error.message : 'Unknown error'}`
+            };
+        }
+    }
 
     private async startDevServer(instanceId: string): Promise<string> {
         try {
@@ -489,18 +579,27 @@ export class SandboxSdkClient extends BaseSandboxService {
                 };
             }
 
-            // Check if instance is responsive
-            const healthResult = await this.getSandbox().exec('echo "healthy"');
-            const isHealthy = healthResult.exitCode === 0;
-
-            // Check for preview URL
+            // Check for preview URL and process status
             let previewURL: string | undefined;
             let processId: string | undefined;
+            let isHealthy = true; // Assume healthy if metadata exists
+            
             try {
                 previewURL = metadata.previewUrl;
                 processId = metadata.processId;
+                
+                // Optionally check if process is still running
+                if (processId) {
+                    try {
+                        const process = await this.getSandbox().getProcess(processId);
+                        isHealthy = !!(process && process.status === 'running');
+                    } catch {
+                        isHealthy = false; // Process not found or not running
+                    }
+                }
             } catch {
                 // No preview available
+                isHealthy = false;
             }
 
             return {
@@ -554,6 +653,9 @@ export class SandboxSdkClient extends BaseSandboxService {
             
             // Clean up files
             await sandbox.exec('rm -rf /app/*');
+
+            // Invalidate cache since instance is being shutdown
+            this.invalidateMetadataCache(instanceId);
 
             return {
                 success: true,
@@ -719,7 +821,6 @@ export class SandboxSdkClient extends BaseSandboxService {
 
     async executeCommands(instanceId: string, commands: string[], timeout?: number): Promise<ExecuteCommandsResponse> {
         try {
-            const sandbox = this.getSandbox();
             const results: CommandExecutionResult[] = [];
             
             for (const command of commands) {
@@ -847,18 +948,19 @@ export class SandboxSdkClient extends BaseSandboxService {
 
     async runStaticAnalysisCode(instanceId: string): Promise<StaticAnalysisResponse> {
         try {
-            const sandbox = this.getSandbox();
-
             const lintIssues: CodeIssue[] = [];
             const typecheckIssues: CodeIssue[] = [];
             
-            // Run ESLint if available
-            try {
-                const lintCmd = `bun run lint`;
-                const lintResult = await this.executeCommand(instanceId, lintCmd);
-                
-                if (lintResult.stdout) {
-                    const lintData = JSON.parse(lintResult.stdout) as Array<{
+            // Run ESLint and TypeScript check in parallel
+            const [lintResult, tscResult] = await Promise.allSettled([
+                this.executeCommand(instanceId, 'bun run lint'),
+                this.executeCommand(instanceId, 'npx tsc --noEmit --pretty false')
+            ]);
+            
+            // Process ESLint results
+            if (lintResult.status === 'fulfilled' && lintResult.value.stdout) {
+                try {
+                    const lintData = JSON.parse(lintResult.value.stdout) as Array<{
                         filePath: string;
                         messages: Array<{
                             message: string;
@@ -882,18 +984,17 @@ export class SandboxSdkClient extends BaseSandboxService {
                             });
                         }
                     }
+                } catch (error) {
+                    this.logger.warn('Failed to parse ESLint output', error);
                 }
-            } catch (error) {
-                this.logger.warn('ESLint analysis failed', error);
+            } else if (lintResult.status === 'rejected') {
+                this.logger.warn('ESLint analysis failed', lintResult.reason);
             }
             
-            // Run TypeScript check if available
-            try {
-                const tscCmd = `npx tsc --noEmit --pretty false`;
-                const tscResult = await this.executeCommand(instanceId, tscCmd);
-                
-                if (tscResult.stderr) {
-                    const lines = tscResult.stderr.split('\n');
+            // Process TypeScript check results
+            if (tscResult.status === 'fulfilled' && tscResult.value.stderr) {
+                try {
+                    const lines = tscResult.value.stderr.split('\n');
                     for (const line of lines) {
                         const match = line.match(/^(.+)\((\d+),(\d+)\): error TS\d+: (.+)$/);
                         if (match) {
@@ -907,9 +1008,11 @@ export class SandboxSdkClient extends BaseSandboxService {
                             });
                         }
                     }
+                } catch (error) {
+                    this.logger.warn('Failed to parse TypeScript output', error);
                 }
-            } catch (error) {
-                this.logger.warn('TypeScript analysis failed', error);
+            } else if (tscResult.status === 'rejected') {
+                this.logger.warn('TypeScript analysis failed', tscResult.reason);
             }
 
             const lintSummary = {
@@ -962,7 +1065,6 @@ export class SandboxSdkClient extends BaseSandboxService {
 
     async deployToCloudflareWorkers(instanceId: string, credentials?: DeploymentCredentials): Promise<DeploymentResult> {
         try {
-            const sandbox = this.getSandbox();
             
             // Build the project first
             try {
@@ -1016,7 +1118,6 @@ export class SandboxSdkClient extends BaseSandboxService {
 
     async initGitHubRepository(instanceId: string, request: GitHubInitRequest): Promise<GitHubInitResponse> {
         try {
-            const sandbox = this.getSandbox();
 
             // Initialize git repository
             const initResult = await this.executeCommand(instanceId, `git init && git add . && git commit -m "Initial commit"`);
@@ -1078,7 +1179,6 @@ export class SandboxSdkClient extends BaseSandboxService {
 
     async pushToGitHub(instanceId: string, request: GitHubPushRequest): Promise<GitHubPushResponse> {
         try {
-            const sandbox = this.getSandbox();
 
             // Add, commit, and push changes with proper error handling
             const addResult = await this.executeCommand(instanceId, `git add .`);
@@ -1109,11 +1209,212 @@ export class SandboxSdkClient extends BaseSandboxService {
         }
     }
 
+    // ==========================================
+    // SAVE/RESUME OPERATIONS
+    // ==========================================
+
+    async saveInstance(instanceId: string): Promise<SaveInstanceResponse> {
+        try {
+            this.logger.info(`Saving instance ${instanceId} to R2 bucket`);
+            
+            const sandbox = this.getSandbox();
+
+            // Check if instance exists
+            const metadata = await this.getInstanceMetadata(instanceId);
+            if (!metadata) {
+                return {
+                    success: false,
+                    error: `Instance ${instanceId} not found`
+                };
+            }
+
+            // Create archive name based on instance details
+            const archiveName = `${instanceId}.zip`;
+            const compressionStart = Date.now();
+
+            // Create zip archive including instance directory and metadata files
+            const zipCmd = `zip -r ${archiveName} ${instanceId}/ ${instanceId}-metadata.json ${instanceId}-runtime_errors.json || true`;
+            const zipResult = await sandbox.exec(zipCmd);
+
+            if (zipResult.exitCode !== 0) {
+                throw new Error(`Failed to create zip archive: ${zipResult.stderr}`);
+            }
+
+            const compressionTime = Date.now() - compressionStart;
+            this.logger.info(`Zipped instance ${instanceId} in ${compressionTime}ms`);
+
+            // Upload to R2 bucket using PUT request
+            const uploadStart = Date.now();
+            const r2Url = `${env.TEMPLATES_BUCKET_URL}/${archiveName}`;
+
+            // Read the zip file
+            const archiveFile = await sandbox.readFile(archiveName);
+            if (!archiveFile.success) {
+                throw new Error('Failed to read zip archive');
+            }
+
+            // Upload to R2
+            const uploadResponse = await fetch(r2Url, {
+                method: 'PUT',
+                body: archiveFile.content,
+                headers: {
+                    'Content-Type': 'application/zip'
+                }
+            });
+
+            if (!uploadResponse.ok) {
+                throw new Error(`Failed to upload to R2: ${uploadResponse.status} ${uploadResponse.statusText}`);
+            }
+
+            const uploadTime = Date.now() - uploadStart;
+
+            // Cleanup local archive
+            await sandbox.exec(`rm -f ${archiveName}`);
+
+            this.logger.info(`Successfully saved instance ${instanceId} to ${r2Url} (compression: ${compressionTime}ms, upload: ${uploadTime}ms)`);
+
+            return {
+                success: true,
+                message: `Successfully saved instance ${instanceId}`,
+                savedUrl: r2Url,
+                savedAs: archiveName,
+                compressionTime,
+                uploadTime
+            };
+
+        } catch (error) {
+            this.logger.error('saveInstance', error, { instanceId });
+            return {
+                success: false,
+                error: `Failed to save instance: ${error instanceof Error ? error.message : 'Unknown error'}`
+            };
+        }
+    }
+
+    async resumeInstance(instanceId: string, forceRestart?: boolean): Promise<ResumeInstanceResponse> {
+        try {
+            this.logger.info(`Resuming instance ${instanceId}`, { forceRestart });
+            
+            const sandbox = this.getSandbox();
+            let needsDownload = false;
+            let needsStart = false;
+
+            // Check if instance exists locally  
+            let metadata = await this.getInstanceMetadata(instanceId);
+            
+            if (!metadata) {
+                this.logger.info(`Instance ${instanceId} not found locally, will download from R2`);
+                needsDownload = true;
+                needsStart = true;
+            } else {
+                // Instance exists, check process status
+                if (!metadata.processId || forceRestart) {
+                    this.logger.info(`Instance ${instanceId} has no process or force restart requested`);
+                    needsStart = true;
+                } else {
+                    // Check if process is still running
+                    try {
+                        const process = await sandbox.getProcess(metadata.processId);
+                        if (!process || process.status !== 'running') {
+                            this.logger.info(`Instance ${instanceId} process ${metadata.processId} is not running`);
+                            needsStart = true;
+                        } else {
+                            this.logger.info(`Instance ${instanceId} is already running with process ${metadata.processId}`);
+                            return {
+                                success: true,
+                                message: `Instance ${instanceId} is already running`,
+                                resumed: false,
+                                previewURL: metadata.previewUrl,
+                                processId: metadata.processId
+                            };
+                        }
+                    } catch (error) {
+                        this.logger.warn(`Failed to check process ${metadata.processId}, will restart`, error);
+                        needsStart = true;
+                    }
+                }
+            }
+
+            let downloadTime = 0;
+            let setupTime = 0;
+
+            // Download from R2 if needed using existing ensureTemplateExists function
+            if (needsDownload) {
+                const downloadStart = Date.now();
+                
+                this.logger.info(`Downloading instance ${instanceId} using ensureTemplateExists`);
+                
+                // Use the existing ensureTemplateExists function which handles zip download and extraction
+                await this.ensureTemplateExists(instanceId);
+
+                downloadTime = Date.now() - downloadStart;
+                this.logger.info(`Downloaded and extracted instance ${instanceId} in ${downloadTime}ms`);
+
+                // Re-read metadata after extraction
+                const extractedMetadata = await this.getInstanceMetadata(instanceId);
+                if (extractedMetadata) {
+                    metadata = extractedMetadata;
+                }
+            }
+
+            // Start process if needed
+            if (needsStart) {
+                const setupStart = Date.now();
+
+                // Install dependencies and start dev server (reuse existing logic)
+                const setupResult = await this.setupInstance(metadata?.templateName || 'unknown', instanceId);
+                
+                if (!setupResult) {
+                    throw new Error('Failed to setup instance');
+                }
+
+                // Update metadata with new process info
+                const updatedMetadata = {
+                    ...metadata,
+                    templateName: metadata?.templateName || 'unknown',
+                    projectName: metadata?.projectName || instanceId,
+                    startTime: new Date().toISOString(),
+                    previewUrl: setupResult.previewUrl,
+                    processId: setupResult.processId
+                };
+
+                await this.storeInstanceMetadata(instanceId, updatedMetadata);
+
+                setupTime = Date.now() - setupStart;
+                this.logger.info(`Started instance ${instanceId} in ${setupTime}ms`);
+
+                return {
+                    success: true,
+                    message: `Successfully resumed instance ${instanceId}`,
+                    resumed: true,
+                    previewURL: setupResult.previewUrl,
+                    processId: setupResult.processId
+                };
+            }
+
+            return {
+                success: true,
+                message: `Instance ${instanceId} was already running`,
+                resumed: false,
+                previewURL: metadata?.previewUrl,
+                processId: metadata?.processId
+            };
+
+        } catch (error) {
+            this.logger.error('resumeInstance', error, { instanceId, forceRestart });
+            return {
+                success: false,
+                resumed: false,
+                error: `Failed to resume instance: ${error instanceof Error ? error.message : 'Unknown error'}`
+            };
+        }
+    }
+
     async *executeStream(instanceId: string, command: string): AsyncIterable<StreamEvent> {
         try {
             const sandbox = this.getSandbox();
 
-            const fullCommand = `${command}`;
+            const fullCommand = `cd ${instanceId} && ${command}`;
             
             this.logger.info(`Starting streaming execution: ${command}`);
             

@@ -7,7 +7,8 @@ import {
   ExecuteCommandsRequestSchema,
   DeploymentCredentialsSchema,
   GitHubInitRequest,
-  GitHubPushRequest
+  GitHubPushRequest,
+  ResumeInstanceRequestSchema
 } from './types';
 
 // Export the Sandbox class in your Worker
@@ -77,11 +78,18 @@ const processController = {
   },
 
   async listAllInstances(c: any) {
-    // This would require tracking instances globally, which isn't implemented in the current architecture
-    return c.json({
-      success: false,
-      error: "Listing all instances is not supported in the current architecture"
-    }, 501);
+    try {
+      const client = await getClientForSession(c);
+      const response = await client.listAllInstances();
+      return c.json(response);
+    } catch (error) {
+      return c.json({ 
+        success: false, 
+        instances: [],
+        count: 0,
+        error: `Failed to list instances: ${error instanceof Error ? error.message : 'Unknown error'}` 
+      }, 500);
+    }
   },
 
   async getInstanceDetails(c: any) {
@@ -252,6 +260,37 @@ const processController = {
       }, 500);
     }
   },
+
+  async saveInstance(c: any) {
+    try {
+      const instanceId = c.req.param('id');
+      const client = await getClientForSession(c);
+      const response = await client.saveInstance(instanceId);
+      return c.json(response);
+    } catch (error) {
+      return c.json({ 
+        success: false, 
+        error: `Failed to save instance: ${error instanceof Error ? error.message : 'Unknown error'}` 
+      }, 500);
+    }
+  },
+
+  async resumeInstance(c: any) {
+    try {
+      const instanceId = c.req.param('id');
+      const body = await c.req.json();
+      const validatedBody = ResumeInstanceRequestSchema.parse(body);
+      const client = await getClientForSession(c);
+      const response = await client.resumeInstance(instanceId, validatedBody.forceRestart);
+      return c.json(response);
+    } catch (error) {
+      return c.json({ 
+        success: false, 
+        resumed: false,
+        error: `Failed to resume instance: ${error instanceof Error ? error.message : 'Unknown error'}` 
+      }, 500);
+    }
+  },
 };
 
 // Deployment controllers
@@ -336,6 +375,8 @@ app.get('/instances/:id/errors', processController.detectErrors);
 app.delete('/instances/:id/errors', processController.clearErrors);
 app.get('/instances/:id/analysis', processController.analyzeCode);
 app.get('/instances/:id/logs', processController.getLogs);
+app.post('/instances/:id/save', processController.saveInstance);
+app.post('/instances/:id/resume', processController.resumeInstance);
 
 // Deployment routes
 app.post('/instances/:id/deploy', deploymentController.deployInstance);

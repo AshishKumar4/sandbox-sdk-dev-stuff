@@ -30,7 +30,10 @@ import {
     GitHubInitResponse, 
     GitHubPushRequest, 
     GitHubPushResponse, 
-    GetLogsResponse
+    GetLogsResponse,
+    ListInstancesResponse,
+    SaveInstanceResponse,
+    ResumeInstanceResponse
   } from './types';
   
   import { createObjectLogger, StructuredLogger } from './logger';
@@ -125,6 +128,12 @@ import {
      * Returns: { success: boolean, instanceId?: string, error?: string }
      */
     abstract createInstance(templateName: string, projectName: string, webhookUrl?: string, wait?: boolean): Promise<BootstrapResponse>;
+
+    /**
+     * List all instances across all sessions
+     * Returns: { success: boolean, instances: [...], count: number, error?: string }
+     */
+    abstract listAllInstances(): Promise<ListInstancesResponse>;
   
     /**
      * Get detailed information about an instance
@@ -221,6 +230,20 @@ import {
      * Push files to GitHub repository for an instance
      */
     abstract pushToGitHub(instanceId: string, request: GitHubPushRequest): Promise<GitHubPushResponse>;
+
+    // ==========================================
+    // SAVE/RESUME OPERATIONS (Required)
+    // ==========================================
+
+    /**
+     * Save instance to R2 bucket as compressed archive
+     */
+    abstract saveInstance(instanceId: string): Promise<SaveInstanceResponse>;
+
+    /**
+     * Resume instance from local files or R2 bucket if needed
+     */
+    abstract resumeInstance(instanceId: string, forceRestart?: boolean): Promise<ResumeInstanceResponse>;
   
     // ==========================================
     // Sandbox-specific
