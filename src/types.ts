@@ -48,6 +48,7 @@ export const RuntimeErrorSchema = z.object({
     lineNumber: z.number().optional(),
     columnNumber: z.number().optional(),
     severity: z.enum(['warning', 'error', 'fatal']),
+    rawOutput: z.string().optional(),
 })
 export type RuntimeError = z.infer<typeof RuntimeErrorSchema>
 
@@ -543,3 +544,10 @@ export const ResumeInstanceResponseSchema = z.object({
     error: z.string().optional(),
 })
 export type ResumeInstanceResponse = z.infer<typeof ResumeInstanceResponseSchema>
+
+// --- Enhanced Error Management Types (for internal monitoring system) ---
+
+// Simple options for enhanced error retrieval
+export interface EnhancedErrorOptions {
+  autoClear?: boolean;
+}

@@ -29,7 +29,8 @@ import {
     GetLogsResponse,
     ListInstancesResponse,
     SaveInstanceResponse,
-    ResumeInstanceResponse
+    ResumeInstanceResponse,
+    EnhancedErrorOptions
 } from './types';
 import { createObjectLogger } from './logger';
 import { env } from 'cloudflare:workers'
@@ -372,8 +373,12 @@ export class SandboxSdkClient extends BaseSandboxService {
 
     private async startDevServer(instanceId: string): Promise<string> {
         try {
-            const process = await this.getSandbox().startProcess(`PORT=8080 bun run dev`, { cwd: instanceId });
-            this.logger.info(`Started dev server for ${instanceId}`);
+            // Use CLI tools for enhanced monitoring instead of direct process start
+            const process = await this.getSandbox().startProcess(
+                `bun run /app/container/cli-tools.ts process start --instance-id ${instanceId} --port 8080 -- bun run dev`, 
+                { cwd: instanceId }
+            );
+            this.logger.info(`Started dev server with enhanced monitoring for ${instanceId}`);
             return process.id;
         } catch (error) {
             this.logger.warn('Failed to start dev server', error);
@@ -409,7 +414,8 @@ export class SandboxSdkClient extends BaseSandboxService {
                         timestamp: new Date(),
                         message: `Failed to install dependencies: ${installResult.stderr}`,
                         severity: 'warning',
-                        source: 'npm_install'
+                        source: 'npm_install',
+                        rawOutput: `Exit code: ${installResult.exitCode}\nSTDOUT: ${installResult.stdout}\nSTDERR: ${installResult.stderr}`
                     };
                     await this.storeRuntimeError(instanceId, error);
                 }
@@ -842,7 +848,8 @@ export class SandboxSdkClient extends BaseSandboxService {
                             message: `Command failed: ${command}`,
                             stack: result.stderr,
                             severity: 'error',
-                            source: 'command_execution'
+                            source: 'command_execution',
+                            rawOutput: `Command: ${command}\nExit code: ${result.exitCode}\nSTDOUT: ${result.stdout}\nSTDERR: ${result.stderr}`
                         };
                         await this.storeRuntimeError(instanceId, error);
                     }
@@ -885,12 +892,56 @@ export class SandboxSdkClient extends BaseSandboxService {
     // ERROR MANAGEMENT
     // ==========================================
 
-    async getInstanceErrors(instanceId: string): Promise<RuntimeErrorResponse> {
+    async getInstanceErrors(instanceId: string, options?: EnhancedErrorOptions): Promise<RuntimeErrorResponse> {
         try {
             let errors: RuntimeError[] = [];
+            
+            // Try enhanced error system first (using cli-tools)
+            try {
+                const cmd = `bun run /app/container/cli-tools.ts errors list -i ${instanceId} --format json`;
+                const result = await this.getSandbox().exec(cmd);
+                
+                if (result.exitCode === 0) {
+                    const response = JSON.parse(result.stdout);
+                    if (response.success && response.errors) {
+                        // Convert enhanced errors to legacy RuntimeError format
+                        errors = response.errors.map((err: Record<string, unknown>) => ({
+                            timestamp: err.lastOccurrence || err.createdAt,
+                            message: String(err.message || ''),
+                            stack: err.stackTrace ? String(err.stackTrace) : undefined,
+                            source: err.category ? String(err.category) : undefined,
+                            filePath: err.sourceFile ? String(err.sourceFile) : undefined,
+                            lineNumber: typeof err.lineNumber === 'number' ? err.lineNumber : undefined,
+                            columnNumber: typeof err.columnNumber === 'number' ? err.columnNumber : undefined,
+                            severity: this.mapSeverityToLegacy(String(err.severity || 'error')),
+                            rawOutput: err.rawOutput ? String(err.rawOutput) : undefined
+                        }));
+
+                        // Auto-clear if requested
+                        if (options?.autoClear && errors.length > 0) {
+                            await this.clearInstanceErrors(instanceId);
+                        }
+
+                        return {
+                            success: true,
+                            errors,
+                            hasErrors: errors.length > 0
+                        };
+                    }
+                }
+            } catch (enhancedError) {
+                this.logger.warn('Enhanced error system unavailable, falling back to legacy', enhancedError);
+            }
+
+            // Fallback to legacy error system
             try {
                 const errorsFile = await this.getSandbox().readFile(this.getRuntimeErrorFile(instanceId));
                 errors = JSON.parse(errorsFile.content) as RuntimeError[];
+                
+                // Auto-clear if requested
+                if (options?.autoClear && errors.length > 0) {
+                    await this.clearInstanceErrors(instanceId);
+                }
             } catch {
                 // No errors stored
             }
@@ -913,13 +964,32 @@ export class SandboxSdkClient extends BaseSandboxService {
 
     async clearInstanceErrors(instanceId: string): Promise<ClearErrorsResponse> {
         try {
-            const sandbox = this.getSandbox();
+            let clearedCount = 0;
 
-            let errorCount = 0;
+            // Try enhanced error system first - clear ALL errors
+            try {
+                const cmd = `bun run /app/container/cli-tools.ts errors clear -i ${instanceId} --confirm`;
+                const result = await this.getSandbox().exec(cmd);
+                
+                if (result.exitCode === 0) {
+                    const response = JSON.parse(result.stdout);
+                    if (response.success) {
+                        return {
+                            success: true,
+                            message: response.message || `Cleared ${response.clearedCount || 0} errors`
+                        };
+                    }
+                }
+            } catch (enhancedError) {
+                this.logger.warn('Enhanced error clearing unavailable, falling back to legacy', enhancedError);
+            }
+
+            // Fallback to legacy error system
+            const sandbox = this.getSandbox();
             try {
                 const errorsFile = await sandbox.readFile(this.getRuntimeErrorFile(instanceId));
                 const errors = JSON.parse(errorsFile.content) as RuntimeError[];
-                errorCount = errors.length;
+                clearedCount = errors.length;
                 
                 // Clear errors by writing empty array
                 await sandbox.writeFile(this.getRuntimeErrorFile(instanceId), JSON.stringify([]));
@@ -927,11 +997,11 @@ export class SandboxSdkClient extends BaseSandboxService {
                 // No errors to clear
             }
 
-            this.logger.info(`Cleared ${errorCount} errors for instance ${instanceId}`);
+            this.logger.info(`Cleared ${clearedCount} errors for instance ${instanceId}`);
 
             return {
                 success: true,
-                message: `Cleared ${errorCount} errors`
+                message: `Cleared ${clearedCount} errors`
             };
         } catch (error) {
             this.logger.error('clearInstanceErrors', error, { instanceId });
@@ -1491,6 +1561,78 @@ export class SandboxSdkClient extends BaseSandboxService {
         } catch (error) {
             this.logger.error('gitCheckout', error, { instanceId, repository, branch });
             throw new Error(`Failed to checkout repository: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+    }
+
+    // ==========================================
+    // LOG RETRIEVAL
+    // ==========================================
+
+
+    /**
+     * Get all recent logs since the last time this function was called for the instance
+     * Returns raw log text and resets the log file
+     */
+    async getAllRecentLogs(instanceId: string): Promise<{
+        success: boolean;
+        logs: string; // Raw log text
+        hasMore: boolean;
+        error?: string;
+    }> {
+        try {
+            // Use CLI to get all logs and reset the file
+            const cmd = `bun run /app/container/cli-tools.ts logs all -i ${instanceId} --format raw`;
+            const result = await this.getSandbox().exec(cmd);
+            
+            if (result.exitCode !== 0) {
+                this.logger.warn(`Failed to retrieve logs for instance ${instanceId}`, { 
+                    exitCode: result.exitCode, 
+                    stderr: result.stderr 
+                });
+                return {
+                    success: false,
+                    logs: '',
+                    hasMore: false,
+                    error: `Failed to retrieve logs: ${result.stderr}`
+                };
+            }
+            
+            const logs = result.stdout || '';
+            
+            this.logger.info(`Retrieved ${logs.length} characters of logs for instance ${instanceId}`);
+            
+            return {
+                success: true,
+                logs,
+                hasMore: false // Always false since we reset the file
+            };
+            
+        } catch (error) {
+            this.logger.error('getAllRecentLogs', error, { instanceId });
+            return {
+                success: false,
+                logs: '',
+                hasMore: false,
+                error: `Failed to get recent logs: ${error instanceof Error ? error.message : 'Unknown error'}`
+            };
+        }
+    }
+    
+    
+
+    /**
+     * Map enhanced severity levels to legacy format for backward compatibility
+     */
+    private mapSeverityToLegacy(severity: string): 'warning' | 'error' | 'fatal' {
+        switch (severity) {
+            case 'fatal':
+                return 'fatal';
+            case 'error':
+                return 'error';
+            case 'warning':
+            case 'info':
+            default:
+                return 'warning';
         }
     }
 }
