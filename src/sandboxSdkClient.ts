@@ -1,4 +1,4 @@
-import { getSandbox, Sandbox, parseSSEStream, type ExecEvent, ExecuteResponse } from '@cloudflare/sandbox';
+import { getSandbox, Sandbox, parseSSEStream, type ExecEvent, ExecuteResponse, LogEvent } from '@cloudflare/sandbox';
 
 export { Sandbox as SandboxService };
 import {
@@ -30,8 +30,8 @@ import {
     ListInstancesResponse,
     SaveInstanceResponse,
     ResumeInstanceResponse,
-    EnhancedErrorOptions
 } from './types';
+
 import { createObjectLogger } from './logger';
 import { env } from 'cloudflare:workers'
 import { BaseSandboxService } from './base';
@@ -42,7 +42,9 @@ interface InstanceMetadata {
     startTime: string;
     webhookUrl?: string;
     previewUrl?: string;
+    tunnelUrl?: string;
     processId?: string;
+    allocatedPort?: number;
 }
 
 type SandboxType = DurableObjectStub<Sandbox<Env>>;
@@ -155,6 +157,36 @@ export class SandboxSdkClient extends BaseSandboxService {
         this.metadataCache.delete(instanceId);
     }
 
+    private async allocateAvailablePort(excludedPorts: number[] = [3000]): Promise<number> {
+        const startTime = Date.now();
+        const excludeList = excludedPorts.join(' ');
+        
+        // Single command to find first available port in dev range (8001-8999)
+        const findPortCmd = `
+            for port in $(seq 8001 8999); do
+                if ! echo "${excludeList}" | grep -q "\\\\b$port\\\\b" && 
+                   ! netstat -tuln 2>/dev/null | grep -q ":$port " && 
+                   ! ss -tuln 2>/dev/null | grep -q ":$port "; then
+                    echo $port
+                    exit 0
+                fi
+            done
+            exit 1
+        `;
+        
+        const result = await this.getSandbox().exec(findPortCmd.trim());
+        const endTime = Date.now();
+        const duration = (endTime - startTime) / 1000;
+        this.logger.info(`Port allocation took ${duration} seconds`);
+        if (result.exitCode === 0 && result.stdout.trim()) {
+            const port = parseInt(result.stdout.trim());
+            this.logger.info(`Allocated available port: ${port}`);
+            return port;
+        }
+        
+        throw new Error('No available ports found in range 8001-8999');
+    }
+
     private async checkTemplateExists(templateName: string): Promise<boolean> {
         // Single command to check if template directory and package.json both exist
         const sandbox = this.getSandbox();
@@ -162,10 +194,10 @@ export class SandboxSdkClient extends BaseSandboxService {
         return checkResult.exitCode === 0 && checkResult.stdout.trim() === "exists";
     }
 
-    private async ensureTemplateExists(templateName: string) {
+    private async ensureTemplateExists(templateName: string, downloadDir?: string) {
         if (!await this.checkTemplateExists(templateName)) {
             // Download and extract template
-            const templateUrl = `${env.TEMPLATES_BUCKET_URL}/${templateName}.zip`;
+            const templateUrl = `${env.TEMPLATES_BUCKET_URL}/${downloadDir ? `${downloadDir}/` : ''}${templateName}.zip`;
             this.logger.info(`Template doesnt exist, Downloading template from: ${templateUrl}`);
             
             const downloadCmd = `mkdir -p ${templateName} && wget -q "${templateUrl}" -O "${templateName}.zip" && unzip -o -q "${templateName}.zip" -d ${templateName}`;
@@ -298,8 +330,8 @@ export class SandboxSdkClient extends BaseSandboxService {
             
             const sandbox = this.getSandbox();
             
-            // Use a single command to find all metadata files and read their contents
-            const bulkResult = await sandbox.exec(`find . -name "*-metadata.json" -type f -exec sh -c 'echo "===FILE:$1==="; cat "$1"' _ {} \\;`);
+            // Use a single command to find metadata files only in current directory (not nested)
+            const bulkResult = await sandbox.exec(`find . -maxdepth 1 -name "*-metadata.json" -type f -exec sh -c 'echo "===FILE:$1==="; cat "$1"' _ {} \\;`);
             
             if (bulkResult.exitCode !== 0) {
                 return {
@@ -342,7 +374,8 @@ export class SandboxSdkClient extends BaseSandboxService {
                         serviceDirectory: instanceId,
                         previewURL: metadata.previewUrl,
                         processId: metadata.processId,
-                        // Skip file tree and runtime errors for efficiency
+                        tunnelUrl: metadata.tunnelUrl,
+                        // Skip file tree
                         fileTree: undefined,
                         runtimeErrors: undefined
                     };
@@ -371,11 +404,11 @@ export class SandboxSdkClient extends BaseSandboxService {
         }
     }
 
-    private async startDevServer(instanceId: string): Promise<string> {
+    private async startDevServer(instanceId: string, port: number): Promise<string> {
         try {
             // Use CLI tools for enhanced monitoring instead of direct process start
             const process = await this.getSandbox().startProcess(
-                `bun run /app/container/cli-tools.ts process start --instance-id ${instanceId} --port 8080 -- bun run dev`, 
+                `monitor-cli process start --instance-id ${instanceId} --port ${port} -- bun run dev`, 
                 { cwd: instanceId }
             );
             this.logger.info(`Started dev server with enhanced monitoring for ${instanceId}`);
@@ -386,30 +419,95 @@ export class SandboxSdkClient extends BaseSandboxService {
         }
     }
 
-    private async setupInstance(templateName: string, instanceId: string): Promise<{previewUrl: string, processId: string} | undefined> {
-        // Install dependencies if package.json exists
-        let previewUrl: string | undefined;
+    private async startCloudflaredTunnel(instanceId: string, port: number): Promise<string> {
+        try {
+            const process = await this.getSandbox().startProcess(
+                `cloudflared tunnel --url http://localhost:${port}`, 
+                { cwd: instanceId }
+            );
+            this.logger.info(`Started cloudflared tunnel for ${instanceId}`);
+
+            // Stream process logs to extract the preview URL
+            const logStream = await this.getSandbox().streamProcessLogs(process.id);
+            
+            return new Promise<string>((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    reject(new Error('Timeout waiting for cloudflared tunnel URL'));
+                }, 10000); // 10 second timeout
+
+                const processLogs = async () => {
+                    try {
+                        for await (const event of parseSSEStream<LogEvent>(logStream)) {
+                            if (event.data) {
+                                const logLine = event.data;
+                                this.logger.info(`Cloudflared log ===> ${logLine}`);
+                                
+                                // Look for the preview URL in the logs
+                                // Format: https://subdomain.trycloudflare.com
+                                const urlMatch = logLine.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+                                if (urlMatch) {
+                                    clearTimeout(timeout);
+                                    const previewUrl = urlMatch[0];
+                                    this.logger.info(`Found cloudflared tunnel URL: ${previewUrl}`);
+                                    resolve(previewUrl);
+                                    return;
+                                }
+                            }
+                        }
+                    } catch (error) {
+                        clearTimeout(timeout);
+                        reject(error);
+                    }
+                };
+
+                processLogs();
+            });
+        } catch (error) {
+            this.logger.warn('Failed to start cloudflared tunnel', error);
+            throw error;
+        }
+    }
+
+    private async setupInstance(templateName: string, instanceId: string): Promise<{previewUrl: string, tunnelUrl: string, processId: string, allocatedPort: number} | undefined> {
         try {
             const sandbox = this.getSandbox();
             const moveTemplateResult = await sandbox.exec(`mv ${templateName} ${instanceId}`);
+            
             if (moveTemplateResult.exitCode === 0) {
+                // Allocate single port for both dev server and tunnel
+                const allocatedPort = await this.allocateAvailablePort();
+                
+                // Start cloudflared tunnel using the same port as dev server
+                const tunnelPromise = this.startCloudflaredTunnel(instanceId, allocatedPort);
+                
                 this.logger.info(`Installing dependencies for ${instanceId}`);
                 const installResult = await this.executeCommand(instanceId, `bun install`);
                 this.logger.info(`Install result: ${installResult.stdout}`);
+                
                 if (installResult.exitCode === 0) {
                     // Try to start development server in background
                     try {
-                        const processId = await this.startDevServer(instanceId);
-                        this.logger.info(`Successfully created instance ${instanceId}, processId: ${processId}`);
-                        const previewResult = await sandbox.exposePort(8080, { hostname: this.hostname });
-                        previewUrl = previewResult.url;
-                        this.logger.info(`Exposed preview URL: ${previewUrl}`);
-                        return { previewUrl, processId };
+                        // Start dev server on allocated port
+                        const processId = await this.startDevServer(instanceId, allocatedPort);
+                        
+                        this.logger.info(`Successfully created instance ${instanceId}, processId: ${processId}, port: ${allocatedPort}`);
+                        
+                        // Expose the same port for preview URL
+                        const previewResult = await sandbox.exposePort(allocatedPort, { hostname: this.hostname });
+                        const previewUrl = previewResult.url;
+                        
+                        // Wait for tunnel URL (tunnel forwards to same port)
+                        const tunnelUrl = await tunnelPromise;
+                        
+                        this.logger.info(`Exposed preview URL: ${previewUrl}, Tunnel URL: ${tunnelUrl}`);
+                        
+                        return { previewUrl, tunnelUrl, processId, allocatedPort };
                     } catch (error) {
-                        this.logger.warn('Failed to start dev server', error);
+                        this.logger.warn('Failed to start dev server or tunnel', error);
                         return undefined;
                     }
                 } else {
+                    // Handle dependency installation failure
                     const error: RuntimeError = {
                         timestamp: new Date(),
                         message: `Failed to install dependencies: ${installResult.stderr}`,
@@ -421,8 +519,10 @@ export class SandboxSdkClient extends BaseSandboxService {
                 }
             }
         } catch (error) {
-            this.logger.warn('Failed to install dependencies', error);
+            this.logger.warn('Failed to setup instance', error);
         }
+        
+        return undefined;
     }
 
     async createInstance(templateName: string, projectName: string, webhookUrl?: string, wait?: boolean): Promise<BootstrapResponse> {
@@ -430,8 +530,7 @@ export class SandboxSdkClient extends BaseSandboxService {
             const instanceId = `${projectName}-${crypto.randomUUID()}`;
             this.logger.info(`Creating sandbox instance: ${instanceId}`, { templateName: templateName, projectName: projectName });
             
-            let previewUrl: string | undefined;
-            let processId: string | undefined;
+            let results: {previewUrl: string, tunnelUrl: string, processId: string, allocatedPort: number} | undefined;
             await this.ensureTemplateExists(templateName);
             
             const setupPromise = () => this.setupInstance(templateName, instanceId);
@@ -443,8 +542,7 @@ export class SandboxSdkClient extends BaseSandboxService {
                         error: 'Failed to setup instance'
                     };
                 }
-                previewUrl = setupResult.previewUrl;
-                processId = setupResult.processId;
+                results = setupResult;
             } else {
                 setupPromise().then(async (result) => {
                     if (!result) {
@@ -461,6 +559,8 @@ export class SandboxSdkClient extends BaseSandboxService {
                         webhookUrl: webhookUrl,
                         previewUrl: result.previewUrl,
                         processId: result.processId,
+                        tunnelUrl: result.tunnelUrl,
+                        allocatedPort: result.allocatedPort,
                     };
                     await this.storeInstanceMetadata(instanceId, metadata);
                     this.logger.info(`Successfully updated metadata for instance ${instanceId}`)
@@ -472,8 +572,10 @@ export class SandboxSdkClient extends BaseSandboxService {
                 projectName: projectName,
                 startTime: new Date().toISOString(),
                 webhookUrl: webhookUrl,
-                previewUrl: previewUrl,
-                processId: processId,
+                previewUrl: results?.previewUrl,
+                processId: results?.processId,
+                tunnelUrl: results?.tunnelUrl,
+                allocatedPort: results?.allocatedPort,
             };
             await this.storeInstanceMetadata(instanceId, metadata);
 
@@ -481,9 +583,9 @@ export class SandboxSdkClient extends BaseSandboxService {
                 success: true,
                 runId: instanceId,
                 message: `Successfully created instance from template ${templateName}`,
-                previewURL: previewUrl,
-                tunnelURL: previewUrl,
-                processId: processId,
+                previewURL: results?.previewUrl,
+                tunnelURL: results?.tunnelUrl,
+                processId: results?.processId,
             };
         } catch (error) {
             this.logger.error('createInstance', error, { templateName: templateName, projectName: projectName });
@@ -558,6 +660,7 @@ export class SandboxSdkClient extends BaseSandboxService {
                 runtimeErrors,
                 previewURL: metadata.previewUrl,
                 processId: metadata.processId,
+                tunnelUrl: metadata.tunnelUrl,
             };
 
             return {
@@ -584,20 +687,13 @@ export class SandboxSdkClient extends BaseSandboxService {
                     error: `Instance ${instanceId} not found`
                 };
             }
-
-            // Check for preview URL and process status
-            let previewURL: string | undefined;
-            let processId: string | undefined;
-            let isHealthy = true; // Assume healthy if metadata exists
             
+            let isHealthy = true;
             try {
-                previewURL = metadata.previewUrl;
-                processId = metadata.processId;
-                
                 // Optionally check if process is still running
-                if (processId) {
+                if (metadata.processId) {
                     try {
-                        const process = await this.getSandbox().getProcess(processId);
+                        const process = await this.getSandbox().getProcess(metadata.processId);
                         isHealthy = !!(process && process.status === 'running');
                     } catch {
                         isHealthy = false; // Process not found or not running
@@ -612,9 +708,9 @@ export class SandboxSdkClient extends BaseSandboxService {
                 success: true,
                 pending: false,
                 message: isHealthy ? 'Instance is running normally' : 'Instance may have issues',
-                previewURL,
-                tunnelURL: previewURL,
-                processId
+                previewURL: metadata.previewUrl,
+                tunnelURL: metadata.tunnelUrl,
+                processId: metadata.processId
             };
         } catch (error) {
             this.logger.error('getInstanceStatus', error, { instanceId });
@@ -647,14 +743,24 @@ export class SandboxSdkClient extends BaseSandboxService {
                 await sandbox.killProcess(process.id);
             }
             
-            // Unexpose all ports
-            try {
-                const exposedPorts = await sandbox.getExposedPorts('localhost');
-                for (const port of exposedPorts) {
-                    await sandbox.unexposePort(port.port);
+            // Unexpose the allocated port if we know what it was
+            if (metadata.allocatedPort) {
+                try {
+                    await sandbox.unexposePort(metadata.allocatedPort);
+                    this.logger.info(`Unexposed port ${metadata.allocatedPort} for instance ${instanceId}`);
+                } catch (error) {
+                    this.logger.warn(`Failed to unexpose port ${metadata.allocatedPort}`, error);
                 }
-            } catch {
-                // Ports may not be exposed
+            } else {
+                // Fallback: try to unexpose all exposed ports
+                try {
+                    const exposedPorts = await sandbox.getExposedPorts('localhost');
+                    for (const port of exposedPorts) {
+                        await sandbox.unexposePort(port.port);
+                    }
+                } catch {
+                    // Ports may not be exposed
+                }
             }
             
             // Clean up files
@@ -746,6 +852,19 @@ export class SandboxSdkClient extends BaseSandboxService {
                 this.logger.info(`Successfully read important files: ${filePaths}`);
             }
 
+            // Read 'donttouch_files.json'
+            const donttouchFiles = await sandbox.exec(`cd ${instanceId} && jq -r '.[]' donttouch_files.json | while read -r path; do if [ -d "$path" ]; then find "$path" -type f; elif [ -f "$path" ]; then echo "$path"; fi; done`);
+            this.logger.info(`Read donttouch files: stdout: ${donttouchFiles.stdout}, stderr: ${donttouchFiles.stderr}`);
+            const donttouchPaths = donttouchFiles.stdout.split('\n').filter(path => path);
+            if (!donttouchPaths) {
+                return {
+                    success: false,
+                    files: [],
+                    error: 'Failed to read donttouch files'
+                };
+            }
+            this.logger.info(`Successfully read donttouch files: ${donttouchPaths}`);
+
             const files = [];
             const errors = [];
 
@@ -759,7 +878,7 @@ export class SandboxSdkClient extends BaseSandboxService {
                 if (readResult.success) {
                     files.push({
                         file_path: readResult.path,
-                        file_contents: readResult.content
+                        file_contents: donttouchPaths.includes(readResult.path) ? '[REDACTED]' : readResult.content
                     });
                     
                     this.logger.info(`Successfully read file: ${readResult.path}`);
@@ -787,25 +906,21 @@ export class SandboxSdkClient extends BaseSandboxService {
         }
     }
 
-    async getLogs(instanceId: string): Promise<GetLogsResponse> {
+    // ==========================================
+    // LOG RETRIEVAL
+    // ==========================================
+    async getLogs(instanceId: string, onlyRecent?: boolean): Promise<GetLogsResponse> {
         try {
-            const sandbox = this.getSandbox();
-            const metadata = await this.getInstanceMetadata(instanceId);
-            if (!metadata || !metadata.processId) {
-                return {
-                    success: false,
-                    logs: {
-                        stdout: '',
-                        stderr: '',
-                    },
-                    error: `Instance ${instanceId} not found or metadata corrupted`
-                };
-            }
-            this.logger.info(`Getting logs for instance: ${instanceId}, processId: ${metadata.processId}`);
-            const logs = await sandbox.getProcessLogs(metadata.processId);
+            this.logger.info(`Getting logs for instance: ${instanceId}`);
+            // Use CLI to get all logs and reset the file
+            const cmd = `timeout 10s monitor-cli logs get -i ${instanceId} --format raw ${onlyRecent ? '--reset' : ''}`;
+            const result = await this.executeCommand(instanceId, cmd, 15000);
             return {
                 success: true,
-                logs,
+                logs: {
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                },
                 error: undefined
             };
         } catch (error) {
@@ -892,64 +1007,55 @@ export class SandboxSdkClient extends BaseSandboxService {
     // ERROR MANAGEMENT
     // ==========================================
 
-    async getInstanceErrors(instanceId: string, options?: EnhancedErrorOptions): Promise<RuntimeErrorResponse> {
+    async getInstanceErrors(instanceId: string, clear?: boolean): Promise<RuntimeErrorResponse> {
         try {
             let errors: RuntimeError[] = [];
+            const cmd = `timeout 3s monitor-cli errors list -i ${instanceId} --format json`;
+            const result = await this.executeCommand(instanceId, cmd, 15000);
             
-            // Try enhanced error system first (using cli-tools)
-            try {
-                const cmd = `bun run /app/container/cli-tools.ts errors list -i ${instanceId} --format json`;
-                const result = await this.getSandbox().exec(cmd);
-                
-                if (result.exitCode === 0) {
-                    const response = JSON.parse(result.stdout);
-                    if (response.success && response.errors) {
-                        // Convert enhanced errors to legacy RuntimeError format
-                        errors = response.errors.map((err: Record<string, unknown>) => ({
-                            timestamp: err.lastOccurrence || err.createdAt,
-                            message: String(err.message || ''),
-                            stack: err.stackTrace ? String(err.stackTrace) : undefined,
-                            source: err.category ? String(err.category) : undefined,
-                            filePath: err.sourceFile ? String(err.sourceFile) : undefined,
-                            lineNumber: typeof err.lineNumber === 'number' ? err.lineNumber : undefined,
-                            columnNumber: typeof err.columnNumber === 'number' ? err.columnNumber : undefined,
-                            severity: this.mapSeverityToLegacy(String(err.severity || 'error')),
-                            rawOutput: err.rawOutput ? String(err.rawOutput) : undefined
-                        }));
+            if (result.exitCode === 0) {
+                let response: any;
+                try {
+                    response = JSON.parse(result.stdout);
+                    this.logger.info('getInstanceErrors', result.stdout);
+                } catch (parseError) {
+                    this.logger.warn('Failed to parse CLI output as JSON', { stdout: result.stdout });
+                    throw new Error('Invalid JSON response from CLI tools');
+                }
+                if (response.success && response.errors) {
+                    // Convert StoredError objects to RuntimeError format
+                    // CLI returns StoredError objects with snake_case field names
+                    errors = response.errors.map((err: Record<string, unknown>) => ({
+                        timestamp: err.last_occurrence || err.created_at,
+                        message: String(err.message || ''),
+                        // stack: err.stack_trace ? String(err.stack_trace) : undefined, // Commented out to save memory
+                        // source: undefined, // Commented out - not needed for now
+                        filePath: err.source_file ? String(err.source_file) : undefined,
+                        lineNumber: typeof err.line_number === 'number' ? err.line_number : undefined,
+                        columnNumber: typeof err.column_number === 'number' ? err.column_number : undefined,
+                        severity: this.mapSeverityToLegacy(String(err.severity || 'error')),
+                        rawOutput: err.raw_output ? String(err.raw_output) : undefined
+                    }));
 
-                        // Auto-clear if requested
-                        if (options?.autoClear && errors.length > 0) {
-                            await this.clearInstanceErrors(instanceId);
-                        }
-
-                        return {
-                            success: true,
-                            errors,
-                            hasErrors: errors.length > 0
-                        };
+                    // Auto-clear if requested
+                    if (clear && errors.length > 0) {
+                        this.clearInstanceErrors(instanceId);   // Call in the background
                     }
-                }
-            } catch (enhancedError) {
-                this.logger.warn('Enhanced error system unavailable, falling back to legacy', enhancedError);
-            }
 
-            // Fallback to legacy error system
-            try {
-                const errorsFile = await this.getSandbox().readFile(this.getRuntimeErrorFile(instanceId));
-                errors = JSON.parse(errorsFile.content) as RuntimeError[];
-                
-                // Auto-clear if requested
-                if (options?.autoClear && errors.length > 0) {
-                    await this.clearInstanceErrors(instanceId);
+                    return {
+                        success: true,
+                        errors,
+                        hasErrors: errors.length > 0
+                    };
                 }
-            } catch {
-                // No errors stored
-            }
+            } 
+            this.logger.error(`Failed to get errors for instance ${instanceId}: STDERR: ${result.stderr}, STDOUT: ${result.stdout}`);
 
             return {
-                success: true,
-                errors,
-                hasErrors: errors.length > 0
+                success: false,
+                errors: [],
+                hasErrors: false,
+                error: `Failed to get errors for instance ${instanceId}: STDERR: ${result.stderr}, STDOUT: ${result.stdout}`
             };
         } catch (error) {
             this.logger.error('getInstanceErrors', error, { instanceId });
@@ -968,11 +1074,17 @@ export class SandboxSdkClient extends BaseSandboxService {
 
             // Try enhanced error system first - clear ALL errors
             try {
-                const cmd = `bun run /app/container/cli-tools.ts errors clear -i ${instanceId} --confirm`;
-                const result = await this.getSandbox().exec(cmd);
+                const cmd = `timeout 10s monitor-cli errors clear -i ${instanceId} --confirm`;
+                const result = await this.executeCommand(instanceId, cmd, 15000); // 15 second timeout
                 
                 if (result.exitCode === 0) {
-                    const response = JSON.parse(result.stdout);
+                    let response: any;
+                    try {
+                        response = JSON.parse(result.stdout);
+                    } catch (parseError) {
+                        this.logger.warn('Failed to parse CLI output as JSON', { stdout: result.stdout });
+                        throw new Error('Invalid JSON response from CLI tools');
+                    }
                     if (response.success) {
                         return {
                             success: true,
@@ -1026,6 +1138,28 @@ export class SandboxSdkClient extends BaseSandboxService {
                 this.executeCommand(instanceId, 'bun run lint'),
                 this.executeCommand(instanceId, 'npx tsc --noEmit --pretty false')
             ]);
+
+            const results: StaticAnalysisResponse = {
+                success: true,
+                lint: {
+                    issues: [],
+                    summary: {
+                        errorCount: 0,
+                        warningCount: 0,
+                        infoCount: 0
+                    },
+                    rawOutput: ''
+                },
+                typecheck: {
+                    issues: [],
+                    summary: {
+                        errorCount: 0,
+                        warningCount: 0,
+                        infoCount: 0
+                    },
+                    rawOutput: ''
+                }
+            };
             
             // Process ESLint results
             if (lintResult.status === 'fulfilled' && lintResult.value.stdout) {
@@ -1057,6 +1191,14 @@ export class SandboxSdkClient extends BaseSandboxService {
                 } catch (error) {
                     this.logger.warn('Failed to parse ESLint output', error);
                 }
+
+                results.lint.issues = lintIssues;
+                results.lint.summary = {
+                    errorCount: lintIssues.filter(issue => issue.severity === 'error').length,
+                    warningCount: lintIssues.filter(issue => issue.severity === 'warning').length,
+                    infoCount: lintIssues.filter(issue => issue.severity === 'info').length
+                };
+                results.lint.rawOutput = lintResult.value.stdout;
             } else if (lintResult.status === 'rejected') {
                 this.logger.warn('ESLint analysis failed', lintResult.reason);
             }
@@ -1078,6 +1220,13 @@ export class SandboxSdkClient extends BaseSandboxService {
                             });
                         }
                     }
+                    results.typecheck.issues = typecheckIssues;
+                    results.typecheck.summary = {
+                        errorCount: typecheckIssues.filter(issue => issue.severity === 'error').length,
+                        warningCount: typecheckIssues.filter(issue => issue.severity === 'warning').length,
+                        infoCount: typecheckIssues.filter(issue => issue.severity === 'info').length
+                    };
+                    results.typecheck.rawOutput = tscResult.value.stderr;
                 } catch (error) {
                     this.logger.warn('Failed to parse TypeScript output', error);
                 }
@@ -1085,30 +1234,10 @@ export class SandboxSdkClient extends BaseSandboxService {
                 this.logger.warn('TypeScript analysis failed', tscResult.reason);
             }
 
-            const lintSummary = {
-                errorCount: lintIssues.filter(i => i.severity === 'error').length,
-                warningCount: lintIssues.filter(i => i.severity === 'warning').length,
-                infoCount: lintIssues.filter(i => i.severity === 'info').length
-            };
-            
-            const typecheckSummary = {
-                errorCount: typecheckIssues.filter(i => i.severity === 'error').length,
-                warningCount: typecheckIssues.filter(i => i.severity === 'warning').length,
-                infoCount: typecheckIssues.filter(i => i.severity === 'info').length
-            };
-
             this.logger.info(`Analysis completed: ${lintIssues.length} lint issues, ${typecheckIssues.length} typecheck issues`);
 
             return {
-                success: true,
-                lint: {
-                    issues: lintIssues,
-                    summary: lintSummary
-                },
-                typecheck: {
-                    issues: typecheckIssues,
-                    summary: typecheckSummary
-                }
+                ...results
             };
         } catch (error) {
             this.logger.error('runStaticAnalysisCode', error, { instanceId });
@@ -1302,8 +1431,12 @@ export class SandboxSdkClient extends BaseSandboxService {
             const archiveName = `${instanceId}.zip`;
             const compressionStart = Date.now();
 
-            // Create zip archive including instance directory and metadata files
-            const zipCmd = `zip -r ${archiveName} ${instanceId}/ ${instanceId}-metadata.json ${instanceId}-runtime_errors.json || true`;
+            // Create zip archive excluding large directories for speed
+            // -0: no compression (fastest)
+            // -r: recursive
+            // -q: quiet (less output overhead)
+            // -x: exclude patterns
+            const zipCmd = `zip -6 -r -q ${archiveName} ${instanceId}/ ${instanceId}-metadata.json ${instanceId}-runtime_errors.json -x "data/*" "*/node_modules/*" "*/dist/*" "*/.wrangler/*" "*/.next/*" "*/.cache/*" "*/build/*" "*/.git/*" "*/.vscode/*" "*/coverage/*" "*/.nyc_output/*" "*/tmp/*" "*/temp/*" || true`;
             const zipResult = await sandbox.exec(zipCmd);
 
             if (zipResult.exitCode !== 0) {
@@ -1315,7 +1448,7 @@ export class SandboxSdkClient extends BaseSandboxService {
 
             // Upload to R2 bucket using PUT request
             const uploadStart = Date.now();
-            const r2Url = `${env.TEMPLATES_BUCKET_URL}/${archiveName}`;
+            const r2Url = `${env.TEMPLATES_BUCKET_URL}/instances/${archiveName}`;
 
             // Read the zip file
             const archiveFile = await sandbox.readFile(archiveName);
@@ -1323,25 +1456,27 @@ export class SandboxSdkClient extends BaseSandboxService {
                 throw new Error('Failed to read zip archive');
             }
 
-            // Upload to R2
-            const uploadResponse = await fetch(r2Url, {
-                method: 'PUT',
-                body: archiveFile.content,
-                headers: {
-                    'Content-Type': 'application/zip'
-                }
-            });
+            // // Upload to R2
+            // const uploadResponse = await fetch(r2Url, {
+            //     method: 'PUT',
+            //     body: archiveFile.content,
+            //     headers: {
+            //         'Content-Type': 'application/zip'
+            //     }
+            // });
 
-            if (!uploadResponse.ok) {
-                throw new Error(`Failed to upload to R2: ${uploadResponse.status} ${uploadResponse.statusText}`);
+            const uploadResponse = await env.TEMPLATES_BUCKET.put(`instances/${archiveName}`, archiveFile.content);
+
+            if (!uploadResponse) {
+                throw new Error(`Failed to upload to R2`);
             }
 
             const uploadTime = Date.now() - uploadStart;
 
             // Cleanup local archive
-            await sandbox.exec(`rm -f ${archiveName}`);
+            // await sandbox.exec(`rm -f ${archiveName}`);
 
-            this.logger.info(`Successfully saved instance ${instanceId} to ${r2Url} (compression: ${compressionTime}ms, upload: ${uploadTime}ms)`);
+            this.logger.info(`Successfully saved instance ${instanceId} to ${r2Url} (compression: ${compressionTime}ms, upload: ${uploadTime}ms), Object: ${uploadResponse}`);
 
             return {
                 success: true,
@@ -1415,7 +1550,7 @@ export class SandboxSdkClient extends BaseSandboxService {
                 this.logger.info(`Downloading instance ${instanceId} using ensureTemplateExists`);
                 
                 // Use the existing ensureTemplateExists function which handles zip download and extraction
-                await this.ensureTemplateExists(instanceId);
+                await this.ensureTemplateExists(instanceId, 'instances');
 
                 downloadTime = Date.now() - downloadStart;
                 this.logger.info(`Downloaded and extracted instance ${instanceId} in ${downloadTime}ms`);
@@ -1445,7 +1580,9 @@ export class SandboxSdkClient extends BaseSandboxService {
                     projectName: metadata?.projectName || instanceId,
                     startTime: new Date().toISOString(),
                     previewUrl: setupResult.previewUrl,
-                    processId: setupResult.processId
+                    processId: setupResult.processId,
+                    tunnelUrl: setupResult.tunnelUrl,
+                    allocatedPort: setupResult.allocatedPort
                 };
 
                 await this.storeInstanceMetadata(instanceId, updatedMetadata);
@@ -1563,62 +1700,6 @@ export class SandboxSdkClient extends BaseSandboxService {
             throw new Error(`Failed to checkout repository: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
     }
-
-    // ==========================================
-    // LOG RETRIEVAL
-    // ==========================================
-
-
-    /**
-     * Get all recent logs since the last time this function was called for the instance
-     * Returns raw log text and resets the log file
-     */
-    async getAllRecentLogs(instanceId: string): Promise<{
-        success: boolean;
-        logs: string; // Raw log text
-        hasMore: boolean;
-        error?: string;
-    }> {
-        try {
-            // Use CLI to get all logs and reset the file
-            const cmd = `bun run /app/container/cli-tools.ts logs all -i ${instanceId} --format raw`;
-            const result = await this.getSandbox().exec(cmd);
-            
-            if (result.exitCode !== 0) {
-                this.logger.warn(`Failed to retrieve logs for instance ${instanceId}`, { 
-                    exitCode: result.exitCode, 
-                    stderr: result.stderr 
-                });
-                return {
-                    success: false,
-                    logs: '',
-                    hasMore: false,
-                    error: `Failed to retrieve logs: ${result.stderr}`
-                };
-            }
-            
-            const logs = result.stdout || '';
-            
-            this.logger.info(`Retrieved ${logs.length} characters of logs for instance ${instanceId}`);
-            
-            return {
-                success: true,
-                logs,
-                hasMore: false // Always false since we reset the file
-            };
-            
-        } catch (error) {
-            this.logger.error('getAllRecentLogs', error, { instanceId });
-            return {
-                success: false,
-                logs: '',
-                hasMore: false,
-                error: `Failed to get recent logs: ${error instanceof Error ? error.message : 'Unknown error'}`
-            };
-        }
-    }
-    
-    
 
     /**
      * Map enhanced severity levels to legacy format for backward compatibility

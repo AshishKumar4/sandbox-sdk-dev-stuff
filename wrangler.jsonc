@@ -27,6 +27,14 @@
         }
       ]
     },
+    "r2_buckets": [
+      {
+        "binding": "TEMPLATES_BUCKET",
+        "bucket_name": "orange-build-templates",
+        "experimental_remote": true,
+        "preview_bucket_name": "orange-build-template-dev"
+      }
+    ],
     "migrations": [
       {
         "new_sqlite_classes": ["Sandbox"],
@@ -35,6 +43,9 @@
     ],
 	"observability": {
 		"enabled": true
+	},
+	"dev": {
+		"container_engine": "unix:///Users/ashishsingh/.docker/run/docker.sock"
 	},
 	/**
 	 * Smart Placement

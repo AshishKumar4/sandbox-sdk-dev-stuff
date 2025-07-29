@@ -173,3 +173,7 @@ dist
 node_modules
 .wrangler
 validation
+*.db
+*.db-shm
+*.log
+temp

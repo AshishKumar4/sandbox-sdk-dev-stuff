@@ -1,6 +1,22 @@
 # FROM docker.io/cloudflare/sandbox:0.1.3
 FROM --platform=linux/arm64 docker.io/cloudflare/sandbox:0.1.3
 
+# Install cloudflared and system dependencies in a single layer
+ARG TARGETARCH
+RUN apt-get update && \
+        apt-get install -y git ca-certificates curl procps net-tools && \
+        update-ca-certificates && \
+        case ${TARGETARCH} in \
+            "amd64") ARCH="amd64" ;; \
+            "arm64") ARCH="arm64" ;; \
+            *) echo "Unsupported architecture: ${TARGETARCH}"; exit 1 ;; \
+        esac && \
+        curl -L -k --output cloudflared "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}" && \
+        chmod +x cloudflared && \
+        mv cloudflared /usr/local/bin/ && \
+        rm -rf /var/lib/apt/lists/* && \    
+        git config --global user.email "orange-build@cloudflare.com" && \
+        git config --global user.name "Cloudflare orange"
 
 # Create directory for error monitoring system
 RUN mkdir -p /app/container /app/data
@@ -21,10 +37,13 @@ RUN ln -sf /app/container/cli-tools.ts /usr/local/bin/monitor-cli
 # Set proper permissions for data directory
 RUN chmod 755 /app/data
 
+# Set environment variable to indicate Docker container environment
+ENV CONTAINER_ENV=docker
+
 # Reset workdir
 WORKDIR /app
 
-EXPOSE 3000
+EXPOSE 3000 
 
 # Run the same command as the original image
 CMD ["bun", "index.ts"]

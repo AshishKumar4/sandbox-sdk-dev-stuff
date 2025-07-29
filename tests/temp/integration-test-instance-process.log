@@ -1,0 +1,522 @@
+[2025-07-28T18:14:13.004Z] [stdout] Process started: node /Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753726453001/infinite-loop-test.js
+[2025-07-28T18:14:13.030Z] [stderr] file:///Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753726453001/infinite-loop-test.js:2
+[2025-07-28T18:14:13.030Z] [stderr] ^
+[2025-07-28T18:14:13.030Z] [stderr] const React = require('react');
+[2025-07-28T18:14:13.030Z] [stderr] This file is being treated as an ES module because it has a '.js' file extension and '/Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
+[2025-07-28T18:14:13.030Z] [stderr] at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:665:26)
+[2025-07-28T18:14:13.030Z] [stderr] at ModuleJob.run (node:internal/modules/esm/module_job:365:25)
+[2025-07-28T18:14:13.030Z] [stderr] at file:///Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753726453001/infinite-loop-test.js:2:15
+[2025-07-28T18:14:13.030Z] [stderr] ReferenceError: require is not defined in ES module scope, you can use import instead
+[2025-07-28T18:14:13.030Z] [stderr] Node.js v24.3.0
+[2025-07-28T18:14:13.030Z] [stderr] at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:99:5)
+[2025-07-28T18:14:13.032Z] [stdout] Process exited with code 1
+[2025-07-28T18:14:13.132Z] [stderr] ERROR: require is not defined in ES module scope, you can use import instead
+[2025-07-28T18:14:13.133Z] [stdout] Process stopping...
+[2025-07-28T18:14:14.008Z] [stdout] Process started: node /Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753726454006/compile-test.js
+[2025-07-28T18:14:14.040Z] [stderr] const { exec } = require('child_process');
+[2025-07-28T18:14:14.040Z] [stderr] ^
+[2025-07-28T18:14:14.040Z] [stderr] at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:665:26)
+[2025-07-28T18:14:14.040Z] [stderr] file:///Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753726454006/compile-test.js:2
+[2025-07-28T18:14:14.040Z] [stderr] Node.js v24.3.0
+[2025-07-28T18:14:14.040Z] [stderr] at file:///Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753726454006/compile-test.js:2:18
+[2025-07-28T18:14:14.040Z] [stderr] This file is being treated as an ES module because it has a '.js' file extension and '/Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
+[2025-07-28T18:14:14.040Z] [stderr] at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:99:5)
+[2025-07-28T18:14:14.040Z] [stderr] ReferenceError: require is not defined in ES module scope, you can use import instead
+[2025-07-28T18:14:14.040Z] [stderr] at ModuleJob.run (node:internal/modules/esm/module_job:365:25)
+[2025-07-28T18:14:14.041Z] [stdout] Process exited with code 1
+[2025-07-28T18:14:14.140Z] [stderr] ERROR: require is not defined in ES module scope, you can use import instead
+[2025-07-28T18:14:14.141Z] [stdout] Process stopping...
+[2025-07-28T18:14:16.011Z] [stdout] Process started: node /Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753726456009/module-errors.js
+[2025-07-28T18:14:16.040Z] [stderr] Error: Cannot resolve module './nonexistent-module' from '/app/src/utils/helper.ts'
+[2025-07-28T18:14:16.040Z] [stderr] at resolveModule (/app/node_modules/vite/dist/node/chunks/dep-df561101.js:44403:21)
+[2025-07-28T18:14:16.040Z] [stderr] ReferenceError: someUndefinedVariable is not defined
+[2025-07-28T18:14:16.040Z] [stderr] TypeError: Assignment to constant variable.
+[2025-07-28T18:14:16.040Z] [stderr] at processOrder (/app/src/services/order.ts:89:25)
+[2025-07-28T18:14:16.040Z] [stderr] at initialize (/app/src/main.ts:23:7)
+[2025-07-28T18:14:16.040Z] [stderr] at calculateTotal (/app/src/utils/math.ts:34:12)
+[2025-07-28T18:14:16.040Z] [stderr] at updateConfig (/app/src/config/settings.ts:15:5)
+[2025-07-28T18:14:16.042Z] [stdout] Process exited with code 1
+[2025-07-28T18:14:16.140Z] [stderr] ERROR: Cannot resolve module './nonexistent-module' from '/app/src/utils/helper.ts'
+[2025-07-28T18:14:16.142Z] [stdout] Process stopping...
+[2025-07-28T18:14:17.514Z] [stdout] Process started: node /Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753726457513/vite-simulator.js
+[2025-07-28T18:14:17.548Z] [stderr] $ vite --host 0.0.0.0 --port ${PORT:-3000}
+[2025-07-28T18:14:17.548Z] [stderr] ERROR: Default inspector port 9229 not available, using 9230 instead
+[2025-07-28T18:14:17.548Z] [stderr] ERROR: $ vite --host 0.0.0.0 --port ${PORT:-3000}
+[2025-07-28T18:14:17.548Z] [stderr] Default inspector port 9229 not available, using 9230 instead
+[2025-07-28T18:14:17.549Z] [stdout] VITE v6.3.5  ready in 722 ms
+[2025-07-28T18:14:17.549Z] [stdout] Local:   http://localhost:3000/
+[2025-07-28T18:14:17.549Z] [stdout] ➜  Local:   http://localhost:3000/
+[2025-07-28T18:14:17.649Z] [stdout] [vite] hmr update /src/App.tsx
+[2025-07-28T18:14:17.649Z] [stdout] [vite] page reload src/main.tsx (hmr update failed)
+[2025-07-28T18:14:17.649Z] [stdout] ready in 145ms
+[2025-07-28T18:14:18.050Z] [stdout] Process exited with code 0
+[2025-07-28T18:14:18.517Z] [stdout] Process started: node /Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753726458515/crash-restart-test.js
+[2025-07-28T18:14:18.552Z] [stderr] file:///Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753726458515/crash-restart-test.js:2
+[2025-07-28T18:14:18.552Z] [stderr] This file is being treated as an ES module because it has a '.js' file extension and '/Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
+[2025-07-28T18:14:18.552Z] [stderr] ^
+[2025-07-28T18:14:18.552Z] [stderr] const fs = require('fs');
+[2025-07-28T18:14:18.552Z] [stderr] ReferenceError: require is not defined in ES module scope, you can use import instead
+[2025-07-28T18:14:18.552Z] [stderr] at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:99:5)
+[2025-07-28T18:14:18.552Z] [stderr] Node.js v24.3.0
+[2025-07-28T18:14:18.552Z] [stderr] at file:///Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753726458515/crash-restart-test.js:2:12
+[2025-07-28T18:14:18.552Z] [stderr] at ModuleJob.run (node:internal/modules/esm/module_job:365:25)
+[2025-07-28T18:14:18.552Z] [stderr] at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:665:26)
+[2025-07-28T18:14:18.554Z] [stdout] Process exited with code 1
+[2025-07-28T18:14:18.653Z] [stderr] ERROR: require is not defined in ES module scope, you can use import instead
+[2025-07-28T18:14:18.654Z] [stdout] Process stopping...
+[2025-07-28T18:14:20.519Z] [stdout] Process started: node /Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753726460518/always-crash.js
+[2025-07-28T18:14:20.549Z] [stderr] at main (/app/src/always-crash.js:10:15)
+[2025-07-28T18:14:20.549Z] [stderr] Fatal error: Process always crashes
+[2025-07-28T18:14:20.551Z] [stdout] Process exited with code 1
+[2025-07-28T18:14:20.601Z] [stdout] Process stopping...
+[2025-07-28T18:14:20.651Z] [stderr] ERROR: Process always crashes
+[2025-07-28T18:14:20.703Z] [stdout] Process stopping...
+[2025-07-28T18:14:20.703Z] [stdout] Process stopped
+[2025-07-28T18:14:20.703Z] [stdout] Process restarting (attempt 1)
+[2025-07-28T18:14:20.755Z] [stdout] Process started: node /Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753726460518/always-crash.js
+[2025-07-28T18:14:20.784Z] [stderr] Fatal error: Process always crashes
+[2025-07-28T18:14:20.784Z] [stderr] at main (/app/src/always-crash.js:10:15)
+[2025-07-28T18:14:20.785Z] [stdout] Process exited with code 1
+[2025-07-28T18:14:21.522Z] [stdout] Process started: node /Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753726461520/log-test.js
+[2025-07-28T18:14:21.557Z] [stdout] info: Application starting up
+[2025-07-28T18:14:21.557Z] [stdout] debug: Processing user request
+[2025-07-28T18:14:21.557Z] [stdout] Process completed successfully
+[2025-07-28T18:14:21.557Z] [stdout] Local:   http://localhost:3000/
+[2025-07-28T18:14:21.557Z] [stdout] VITE v6.3.5  ready in 722 ms
+[2025-07-28T18:14:21.557Z] [stderr] warning: Deprecated API usage detected
+[2025-07-28T18:14:21.557Z] [stderr] ERROR: Failed to compile application
+[2025-07-28T18:14:21.761Z] [stdout] Process exited with code 0
+[2025-07-28T18:14:22.524Z] [stdout] Process started: node /Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753726462523/high-volume-test.js
+[2025-07-28T18:14:22.569Z] [stdout] Log message 0: Processing item 0
+[2025-07-28T18:14:22.569Z] [stderr] Debug info 0: Memory usage check
+[2025-07-28T18:14:22.578Z] [stdout] Log message 1: Processing item 1
+[2025-07-28T18:14:22.578Z] [stderr] Debug info 1: Memory usage check
+[2025-07-28T18:14:22.588Z] [stdout] Log message 2: Processing item 2
+[2025-07-28T18:14:22.588Z] [stderr] Debug info 2: Memory usage check
+[2025-07-28T18:14:22.599Z] [stdout] Log message 3: Processing item 3
+[2025-07-28T18:14:22.599Z] [stderr] Debug info 3: Memory usage check
+[2025-07-28T18:14:22.610Z] [stdout] Log message 4: Processing item 4
+[2025-07-28T18:14:22.610Z] [stderr] Debug info 4: Memory usage check
+[2025-07-28T18:14:22.622Z] [stdout] Log message 5: Processing item 5
+[2025-07-28T18:14:22.622Z] [stderr] Debug info 5: Memory usage check
+[2025-07-28T18:14:22.631Z] [stdout] Log message 6: Processing item 6
+[2025-07-28T18:14:22.631Z] [stderr] Debug info 6: Memory usage check
+[2025-07-28T18:14:22.642Z] [stdout] Log message 7: Processing item 7
+[2025-07-28T18:14:22.642Z] [stderr] Debug info 7: Memory usage check
+[2025-07-28T18:14:22.653Z] [stdout] Log message 8: Processing item 8
+[2025-07-28T18:14:22.653Z] [stderr] Debug info 8: Memory usage check
+[2025-07-28T18:14:22.663Z] [stdout] Log message 9: Processing item 9
+[2025-07-28T18:14:22.663Z] [stderr] Debug info 9: Memory usage check
+[2025-07-28T18:14:22.673Z] [stdout] Log message 10: Processing item 10
+[2025-07-28T18:14:22.673Z] [stderr] Debug info 10: Memory usage check
+[2025-07-28T18:14:22.683Z] [stdout] Log message 11: Processing item 11
+[2025-07-28T18:14:22.683Z] [stderr] Debug info 11: Memory usage check
+[2025-07-28T18:14:22.694Z] [stdout] Log message 12: Processing item 12
+[2025-07-28T18:14:22.694Z] [stderr] Debug info 12: Memory usage check
+[2025-07-28T18:14:22.705Z] [stdout] Log message 13: Processing item 13
+[2025-07-28T18:14:22.705Z] [stderr] Debug info 13: Memory usage check
+[2025-07-28T18:14:22.716Z] [stderr] Debug info 14: Memory usage check
+[2025-07-28T18:14:22.716Z] [stdout] Log message 14: Processing item 14
+[2025-07-28T18:14:22.727Z] [stdout] Log message 15: Processing item 15
+[2025-07-28T18:14:22.727Z] [stderr] Debug info 15: Memory usage check
+[2025-07-28T18:14:22.738Z] [stdout] Log message 16: Processing item 16
+[2025-07-28T18:14:22.738Z] [stderr] Debug info 16: Memory usage check
+[2025-07-28T18:14:22.749Z] [stdout] Log message 17: Processing item 17
+[2025-07-28T18:14:22.749Z] [stderr] Debug info 17: Memory usage check
+[2025-07-28T18:14:22.760Z] [stdout] Log message 18: Processing item 18
+[2025-07-28T18:14:22.760Z] [stderr] Debug info 18: Memory usage check
+[2025-07-28T18:14:22.771Z] [stdout] Log message 19: Processing item 19
+[2025-07-28T18:14:22.771Z] [stderr] Debug info 19: Memory usage check
+[2025-07-28T18:14:22.782Z] [stdout] Log message 20: Processing item 20
+[2025-07-28T18:14:22.782Z] [stderr] Debug info 20: Memory usage check
+[2025-07-28T18:14:22.794Z] [stdout] Log message 21: Processing item 21
+[2025-07-28T18:14:22.794Z] [stderr] Debug info 21: Memory usage check
+[2025-07-28T18:14:22.804Z] [stdout] Log message 22: Processing item 22
+[2025-07-28T18:14:22.804Z] [stderr] Debug info 22: Memory usage check
+[2025-07-28T18:14:22.814Z] [stdout] Log message 23: Processing item 23
+[2025-07-28T18:14:22.814Z] [stderr] Debug info 23: Memory usage check
+[2025-07-28T18:14:22.825Z] [stdout] Log message 24: Processing item 24
+[2025-07-28T18:14:22.825Z] [stderr] Debug info 24: Memory usage check
+[2025-07-28T18:14:22.835Z] [stdout] Log message 25: Processing item 25
+[2025-07-28T18:14:22.835Z] [stderr] Debug info 25: Memory usage check
+[2025-07-28T18:14:22.845Z] [stdout] Log message 26: Processing item 26
+[2025-07-28T18:14:22.846Z] [stderr] Debug info 26: Memory usage check
+[2025-07-28T18:14:22.856Z] [stdout] Log message 27: Processing item 27
+[2025-07-28T18:14:22.856Z] [stderr] Debug info 27: Memory usage check
+[2025-07-28T18:14:22.866Z] [stdout] Log message 28: Processing item 28
+[2025-07-28T18:14:22.866Z] [stderr] Debug info 28: Memory usage check
+[2025-07-28T18:14:22.877Z] [stdout] Log message 29: Processing item 29
+[2025-07-28T18:14:22.877Z] [stderr] Debug info 29: Memory usage check
+[2025-07-28T18:14:22.887Z] [stdout] Log message 30: Processing item 30
+[2025-07-28T18:14:22.887Z] [stderr] Debug info 30: Memory usage check
+[2025-07-28T18:14:22.898Z] [stdout] Log message 31: Processing item 31
+[2025-07-28T18:14:22.898Z] [stderr] Debug info 31: Memory usage check
+[2025-07-28T18:14:22.908Z] [stdout] Log message 32: Processing item 32
+[2025-07-28T18:14:22.908Z] [stderr] Debug info 32: Memory usage check
+[2025-07-28T18:14:22.919Z] [stdout] Log message 33: Processing item 33
+[2025-07-28T18:14:22.919Z] [stderr] Debug info 33: Memory usage check
+[2025-07-28T18:14:22.930Z] [stdout] Log message 34: Processing item 34
+[2025-07-28T18:14:22.930Z] [stderr] Debug info 34: Memory usage check
+[2025-07-28T18:14:22.941Z] [stdout] Log message 35: Processing item 35
+[2025-07-28T18:14:22.941Z] [stderr] Debug info 35: Memory usage check
+[2025-07-28T18:14:22.952Z] [stdout] Log message 36: Processing item 36
+[2025-07-28T18:14:22.952Z] [stderr] Debug info 36: Memory usage check
+[2025-07-28T18:14:22.963Z] [stdout] Log message 37: Processing item 37
+[2025-07-28T18:14:22.963Z] [stderr] Debug info 37: Memory usage check
+[2025-07-28T18:14:22.973Z] [stdout] Log message 38: Processing item 38
+[2025-07-28T18:14:22.973Z] [stderr] Debug info 38: Memory usage check
+[2025-07-28T18:14:22.983Z] [stdout] Log message 39: Processing item 39
+[2025-07-28T18:14:22.983Z] [stderr] Debug info 39: Memory usage check
+[2025-07-28T18:14:22.995Z] [stdout] Log message 40: Processing item 40
+[2025-07-28T18:14:22.995Z] [stderr] Debug info 40: Memory usage check
+[2025-07-28T18:14:23.006Z] [stdout] Log message 41: Processing item 41
+[2025-07-28T18:14:23.006Z] [stderr] Debug info 41: Memory usage check
+[2025-07-28T18:14:23.016Z] [stderr] Debug info 42: Memory usage check
+[2025-07-28T18:14:23.016Z] [stdout] Log message 42: Processing item 42
+[2025-07-28T18:14:23.027Z] [stdout] Log message 43: Processing item 43
+[2025-07-28T18:14:23.027Z] [stderr] Debug info 43: Memory usage check
+[2025-07-28T18:14:23.038Z] [stdout] Log message 44: Processing item 44
+[2025-07-28T18:14:23.038Z] [stderr] Debug info 44: Memory usage check
+[2025-07-28T18:14:23.049Z] [stdout] Log message 45: Processing item 45
+[2025-07-28T18:14:23.049Z] [stderr] Debug info 45: Memory usage check
+[2025-07-28T18:14:23.060Z] [stdout] Log message 46: Processing item 46
+[2025-07-28T18:14:23.060Z] [stderr] Debug info 46: Memory usage check
+[2025-07-28T18:14:23.071Z] [stdout] Log message 47: Processing item 47
+[2025-07-28T18:14:23.071Z] [stderr] Debug info 47: Memory usage check
+[2025-07-28T18:14:23.082Z] [stdout] Log message 48: Processing item 48
+[2025-07-28T18:14:23.082Z] [stderr] Debug info 48: Memory usage check
+[2025-07-28T18:14:23.093Z] [stdout] Log message 49: Processing item 49
+[2025-07-28T18:14:23.093Z] [stderr] Debug info 49: Memory usage check
+[2025-07-28T18:14:23.104Z] [stdout] Log message 50: Processing item 50
+[2025-07-28T18:14:23.104Z] [stderr] Debug info 50: Memory usage check
+[2025-07-28T18:14:23.115Z] [stdout] Log message 51: Processing item 51
+[2025-07-28T18:14:23.115Z] [stderr] Debug info 51: Memory usage check
+[2025-07-28T18:14:23.126Z] [stdout] Log message 52: Processing item 52
+[2025-07-28T18:14:23.126Z] [stderr] Debug info 52: Memory usage check
+[2025-07-28T18:14:23.134Z] [stdout] Process stopped
+[2025-07-28T18:14:23.134Z] [stdout] Process restarting (attempt 1)
+[2025-07-28T18:14:23.137Z] [stdout] Log message 53: Processing item 53
+[2025-07-28T18:14:23.137Z] [stderr] Debug info 53: Memory usage check
+[2025-07-28T18:14:23.148Z] [stdout] Log message 54: Processing item 54
+[2025-07-28T18:14:23.148Z] [stderr] Debug info 54: Memory usage check
+[2025-07-28T18:14:23.158Z] [stdout] Log message 55: Processing item 55
+[2025-07-28T18:14:23.158Z] [stderr] Debug info 55: Memory usage check
+[2025-07-28T18:14:23.169Z] [stdout] Log message 56: Processing item 56
+[2025-07-28T18:14:23.169Z] [stderr] Debug info 56: Memory usage check
+[2025-07-28T18:14:23.180Z] [stdout] Log message 57: Processing item 57
+[2025-07-28T18:14:23.180Z] [stderr] Debug info 57: Memory usage check
+[2025-07-28T18:14:23.190Z] [stderr] Debug info 58: Memory usage check
+[2025-07-28T18:14:23.190Z] [stdout] Log message 58: Processing item 58
+[2025-07-28T18:14:23.200Z] [stdout] Log message 59: Processing item 59
+[2025-07-28T18:14:23.200Z] [stderr] Debug info 59: Memory usage check
+[2025-07-28T18:14:23.212Z] [stdout] Log message 60: Processing item 60
+[2025-07-28T18:14:23.212Z] [stderr] Debug info 60: Memory usage check
+[2025-07-28T18:14:23.222Z] [stdout] Log message 61: Processing item 61
+[2025-07-28T18:14:23.222Z] [stderr] Debug info 61: Memory usage check
+[2025-07-28T18:14:23.233Z] [stdout] Log message 62: Processing item 62
+[2025-07-28T18:14:23.233Z] [stderr] Debug info 62: Memory usage check
+[2025-07-28T18:14:23.237Z] [stdout] Process started: node /Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753726463235/simple-test.js
+[2025-07-28T18:14:23.244Z] [stdout] Log message 63: Processing item 63
+[2025-07-28T18:14:23.244Z] [stderr] Debug info 63: Memory usage check
+[2025-07-28T18:14:23.254Z] [stdout] Log message 64: Processing item 64
+[2025-07-28T18:14:23.254Z] [stderr] Debug info 64: Memory usage check
+[2025-07-28T18:14:23.265Z] [stdout] Log message 65: Processing item 65
+[2025-07-28T18:14:23.265Z] [stderr] Debug info 65: Memory usage check
+[2025-07-28T18:14:23.268Z] [stdout] Simple test script running
+[2025-07-28T18:14:23.276Z] [stdout] Log message 66: Processing item 66
+[2025-07-28T18:14:23.276Z] [stderr] Debug info 66: Memory usage check
+[2025-07-28T18:14:23.288Z] [stdout] Log message 67: Processing item 67
+[2025-07-28T18:14:23.288Z] [stderr] Debug info 67: Memory usage check
+[2025-07-28T18:14:23.298Z] [stdout] Log message 68: Processing item 68
+[2025-07-28T18:14:23.298Z] [stderr] Debug info 68: Memory usage check
+[2025-07-28T18:14:23.308Z] [stdout] Log message 69: Processing item 69
+[2025-07-28T18:14:23.308Z] [stderr] Debug info 69: Memory usage check
+[2025-07-28T18:14:23.319Z] [stdout] Log message 70: Processing item 70
+[2025-07-28T18:14:23.319Z] [stderr] Debug info 70: Memory usage check
+[2025-07-28T18:14:23.330Z] [stdout] Log message 71: Processing item 71
+[2025-07-28T18:14:23.330Z] [stderr] Debug info 71: Memory usage check
+[2025-07-28T18:14:23.340Z] [stdout] Log message 72: Processing item 72
+[2025-07-28T18:14:23.340Z] [stderr] Debug info 72: Memory usage check
+[2025-07-28T18:14:23.351Z] [stdout] Log message 73: Processing item 73
+[2025-07-28T18:14:23.351Z] [stderr] Debug info 73: Memory usage check
+[2025-07-28T18:14:23.362Z] [stdout] Log message 74: Processing item 74
+[2025-07-28T18:14:23.362Z] [stderr] Debug info 74: Memory usage check
+[2025-07-28T18:14:23.373Z] [stdout] Log message 75: Processing item 75
+[2025-07-28T18:14:23.373Z] [stderr] Debug info 75: Memory usage check
+[2025-07-28T18:14:23.384Z] [stderr] Debug info 76: Memory usage check
+[2025-07-28T18:14:23.384Z] [stdout] Log message 76: Processing item 76
+[2025-07-28T18:14:23.394Z] [stderr] Debug info 77: Memory usage check
+[2025-07-28T18:14:23.394Z] [stdout] Log message 77: Processing item 77
+[2025-07-28T18:14:23.404Z] [stderr] Debug info 78: Memory usage check
+[2025-07-28T18:14:23.404Z] [stdout] Log message 78: Processing item 78
+[2025-07-28T18:14:23.415Z] [stdout] Log message 79: Processing item 79
+[2025-07-28T18:14:23.416Z] [stderr] Debug info 79: Memory usage check
+[2025-07-28T18:14:23.426Z] [stdout] Log message 80: Processing item 80
+[2025-07-28T18:14:23.426Z] [stderr] Debug info 80: Memory usage check
+[2025-07-28T18:14:23.437Z] [stdout] Log message 81: Processing item 81
+[2025-07-28T18:14:23.437Z] [stdout] Process stopping...
+[2025-07-28T18:14:23.437Z] [stderr] Debug info 81: Memory usage check
+[2025-07-28T18:14:23.439Z] [stdout] Process exited with code null (signal: SIGTERM)
+[2025-07-28T18:14:23.439Z] [stdout] Process stopped
+[2025-07-28T18:24:05.723Z] [stdout] Process started: node /Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753727045721/infinite-loop-test.js
+[2025-07-28T18:24:05.750Z] [stderr] file:///Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753727045721/infinite-loop-test.js:2
+[2025-07-28T18:24:05.750Z] [stderr] at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:99:5)
+[2025-07-28T18:24:05.750Z] [stderr] const React = require('react');
+[2025-07-28T18:24:05.750Z] [stderr] This file is being treated as an ES module because it has a '.js' file extension and '/Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
+[2025-07-28T18:24:05.750Z] [stderr] Node.js v24.3.0
+[2025-07-28T18:24:05.750Z] [stderr] ReferenceError: require is not defined in ES module scope, you can use import instead
+[2025-07-28T18:24:05.750Z] [stderr] ^
+[2025-07-28T18:24:05.750Z] [stderr] at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:665:26)
+[2025-07-28T18:24:05.750Z] [stderr] at file:///Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753727045721/infinite-loop-test.js:2:15
+[2025-07-28T18:24:05.750Z] [stderr] at ModuleJob.run (node:internal/modules/esm/module_job:365:25)
+[2025-07-28T18:24:05.751Z] [stdout] Process exited with code 1
+[2025-07-28T18:24:05.851Z] [stderr] ERROR: require is not defined in ES module scope, you can use import instead
+[2025-07-28T18:24:05.852Z] [stdout] Process stopping...
+[2025-07-28T18:24:06.727Z] [stdout] Process started: node /Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753727046726/compile-test.js
+[2025-07-28T18:24:06.761Z] [stderr] file:///Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753727046726/compile-test.js:2
+[2025-07-28T18:24:06.761Z] [stderr] ^
+[2025-07-28T18:24:06.761Z] [stderr] const { exec } = require('child_process');
+[2025-07-28T18:24:06.761Z] [stderr] This file is being treated as an ES module because it has a '.js' file extension and '/Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
+[2025-07-28T18:24:06.761Z] [stderr] ReferenceError: require is not defined in ES module scope, you can use import instead
+[2025-07-28T18:24:06.761Z] [stderr] at file:///Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753727046726/compile-test.js:2:18
+[2025-07-28T18:24:06.761Z] [stderr] Node.js v24.3.0
+[2025-07-28T18:24:06.761Z] [stderr] at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:99:5)
+[2025-07-28T18:24:06.761Z] [stderr] at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:665:26)
+[2025-07-28T18:24:06.761Z] [stderr] at ModuleJob.run (node:internal/modules/esm/module_job:365:25)
+[2025-07-28T18:24:06.762Z] [stdout] Process exited with code 1
+[2025-07-28T18:24:06.862Z] [stderr] ERROR: require is not defined in ES module scope, you can use import instead
+[2025-07-28T18:24:06.862Z] [stdout] Process stopping...
+[2025-07-28T18:24:08.730Z] [stdout] Process started: node /Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753727048728/module-errors.js
+[2025-07-28T18:24:08.759Z] [stderr] Error: Cannot resolve module './nonexistent-module' from '/app/src/utils/helper.ts'
+[2025-07-28T18:24:08.759Z] [stderr] at processOrder (/app/src/services/order.ts:89:25)
+[2025-07-28T18:24:08.759Z] [stderr] at initialize (/app/src/main.ts:23:7)
+[2025-07-28T18:24:08.759Z] [stderr] at resolveModule (/app/node_modules/vite/dist/node/chunks/dep-df561101.js:44403:21)
+[2025-07-28T18:24:08.759Z] [stderr] at updateConfig (/app/src/config/settings.ts:15:5)
+[2025-07-28T18:24:08.759Z] [stderr] TypeError: Assignment to constant variable.
+[2025-07-28T18:24:08.759Z] [stderr] at calculateTotal (/app/src/utils/math.ts:34:12)
+[2025-07-28T18:24:08.759Z] [stderr] ReferenceError: someUndefinedVariable is not defined
+[2025-07-28T18:24:08.761Z] [stdout] Process exited with code 1
+[2025-07-28T18:24:08.860Z] [stderr] ERROR: Cannot resolve module './nonexistent-module' from '/app/src/utils/helper.ts'
+[2025-07-28T18:24:08.861Z] [stdout] Process stopping...
+[2025-07-28T18:24:10.233Z] [stdout] Process started: node /Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753727050232/vite-simulator.js
+[2025-07-28T18:24:10.265Z] [stderr] $ vite --host 0.0.0.0 --port ${PORT:-3000}
+[2025-07-28T18:24:10.265Z] [stderr] Default inspector port 9229 not available, using 9230 instead
+[2025-07-28T18:24:10.265Z] [stderr] ERROR: $ vite --host 0.0.0.0 --port ${PORT:-3000}
+[2025-07-28T18:24:10.265Z] [stderr] ERROR: Default inspector port 9229 not available, using 9230 instead
+[2025-07-28T18:24:10.266Z] [stdout] VITE v6.3.5  ready in 722 ms
+[2025-07-28T18:24:10.266Z] [stdout] ➜  Local:   http://localhost:3000/
+[2025-07-28T18:24:10.266Z] [stdout] Local:   http://localhost:3000/
+[2025-07-28T18:24:10.367Z] [stdout] [vite] page reload src/main.tsx (hmr update failed)
+[2025-07-28T18:24:10.367Z] [stdout] [vite] hmr update /src/App.tsx
+[2025-07-28T18:24:10.367Z] [stdout] ready in 145ms
+[2025-07-28T18:24:10.769Z] [stdout] Process exited with code 0
+[2025-07-28T18:24:11.235Z] [stdout] Process started: node /Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753727051234/crash-restart-test.js
+[2025-07-28T18:24:11.265Z] [stderr] file:///Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753727051234/crash-restart-test.js:2
+[2025-07-28T18:24:11.265Z] [stderr] at ModuleJob.run (node:internal/modules/esm/module_job:365:25)
+[2025-07-28T18:24:11.265Z] [stderr] ^
+[2025-07-28T18:24:11.265Z] [stderr] at file:///Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753727051234/crash-restart-test.js:2:12
+[2025-07-28T18:24:11.265Z] [stderr] at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:99:5)
+[2025-07-28T18:24:11.265Z] [stderr] const fs = require('fs');
+[2025-07-28T18:24:11.265Z] [stderr] at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:665:26)
+[2025-07-28T18:24:11.265Z] [stderr] ReferenceError: require is not defined in ES module scope, you can use import instead
+[2025-07-28T18:24:11.265Z] [stderr] Node.js v24.3.0
+[2025-07-28T18:24:11.265Z] [stderr] This file is being treated as an ES module because it has a '.js' file extension and '/Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
+[2025-07-28T18:24:11.267Z] [stdout] Process exited with code 1
+[2025-07-28T18:24:11.366Z] [stderr] ERROR: require is not defined in ES module scope, you can use import instead
+[2025-07-28T18:24:11.367Z] [stdout] Process stopping...
+[2025-07-28T18:24:13.237Z] [stdout] Process started: node /Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753727053236/always-crash.js
+[2025-07-28T18:24:13.263Z] [stderr] Fatal error: Process always crashes
+[2025-07-28T18:24:13.264Z] [stderr] at main (/app/src/always-crash.js:10:15)
+[2025-07-28T18:24:13.265Z] [stdout] Process exited with code 1
+[2025-07-28T18:24:13.316Z] [stdout] Process stopping...
+[2025-07-28T18:24:13.365Z] [stderr] ERROR: Process always crashes
+[2025-07-28T18:24:13.416Z] [stdout] Process stopping...
+[2025-07-28T18:24:13.416Z] [stdout] Process stopped
+[2025-07-28T18:24:13.416Z] [stdout] Process restarting (attempt 1)
+[2025-07-28T18:24:13.468Z] [stdout] Process started: node /Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753727053236/always-crash.js
+[2025-07-28T18:24:13.496Z] [stderr] Fatal error: Process always crashes
+[2025-07-28T18:24:13.496Z] [stderr] at main (/app/src/always-crash.js:10:15)
+[2025-07-28T18:24:13.498Z] [stdout] Process exited with code 1
+[2025-07-28T18:24:14.239Z] [stdout] Process started: node /Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753727054238/log-test.js
+[2025-07-28T18:24:14.270Z] [stdout] info: Application starting up
+[2025-07-28T18:24:14.270Z] [stdout] Local:   http://localhost:3000/
+[2025-07-28T18:24:14.270Z] [stderr] warning: Deprecated API usage detected
+[2025-07-28T18:24:14.270Z] [stdout] debug: Processing user request
+[2025-07-28T18:24:14.270Z] [stdout] VITE v6.3.5  ready in 722 ms
+[2025-07-28T18:24:14.270Z] [stdout] Process completed successfully
+[2025-07-28T18:24:14.270Z] [stderr] ERROR: Failed to compile application
+[2025-07-28T18:24:14.473Z] [stdout] Process exited with code 0
+[2025-07-28T18:24:15.242Z] [stdout] Process started: node /Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753727055241/high-volume-test.js
+[2025-07-28T18:24:15.284Z] [stdout] Log message 0: Processing item 0
+[2025-07-28T18:24:15.284Z] [stderr] Debug info 0: Memory usage check
+[2025-07-28T18:24:15.293Z] [stdout] Log message 1: Processing item 1
+[2025-07-28T18:24:15.293Z] [stderr] Debug info 1: Memory usage check
+[2025-07-28T18:24:15.304Z] [stdout] Log message 2: Processing item 2
+[2025-07-28T18:24:15.304Z] [stderr] Debug info 2: Memory usage check
+[2025-07-28T18:24:15.315Z] [stdout] Log message 3: Processing item 3
+[2025-07-28T18:24:15.315Z] [stderr] Debug info 3: Memory usage check
+[2025-07-28T18:24:15.326Z] [stderr] Debug info 4: Memory usage check
+[2025-07-28T18:24:15.325Z] [stdout] Log message 4: Processing item 4
+[2025-07-28T18:24:15.335Z] [stdout] Log message 5: Processing item 5
+[2025-07-28T18:24:15.335Z] [stderr] Debug info 5: Memory usage check
+[2025-07-28T18:24:15.346Z] [stdout] Log message 6: Processing item 6
+[2025-07-28T18:24:15.346Z] [stderr] Debug info 6: Memory usage check
+[2025-07-28T18:24:15.357Z] [stderr] Debug info 7: Memory usage check
+[2025-07-28T18:24:15.357Z] [stdout] Log message 7: Processing item 7
+[2025-07-28T18:24:15.368Z] [stdout] Log message 8: Processing item 8
+[2025-07-28T18:24:15.368Z] [stderr] Debug info 8: Memory usage check
+[2025-07-28T18:24:15.379Z] [stdout] Log message 9: Processing item 9
+[2025-07-28T18:24:15.379Z] [stderr] Debug info 9: Memory usage check
+[2025-07-28T18:24:15.390Z] [stdout] Log message 10: Processing item 10
+[2025-07-28T18:24:15.390Z] [stderr] Debug info 10: Memory usage check
+[2025-07-28T18:24:15.400Z] [stdout] Log message 11: Processing item 11
+[2025-07-28T18:24:15.400Z] [stderr] Debug info 11: Memory usage check
+[2025-07-28T18:24:15.411Z] [stdout] Log message 12: Processing item 12
+[2025-07-28T18:24:15.411Z] [stderr] Debug info 12: Memory usage check
+[2025-07-28T18:24:15.421Z] [stdout] Log message 13: Processing item 13
+[2025-07-28T18:24:15.421Z] [stderr] Debug info 13: Memory usage check
+[2025-07-28T18:24:15.432Z] [stdout] Log message 14: Processing item 14
+[2025-07-28T18:24:15.432Z] [stderr] Debug info 14: Memory usage check
+[2025-07-28T18:24:15.443Z] [stderr] Debug info 15: Memory usage check
+[2025-07-28T18:24:15.443Z] [stdout] Log message 15: Processing item 15
+[2025-07-28T18:24:15.454Z] [stderr] Debug info 16: Memory usage check
+[2025-07-28T18:24:15.453Z] [stdout] Log message 16: Processing item 16
+[2025-07-28T18:24:15.465Z] [stdout] Log message 17: Processing item 17
+[2025-07-28T18:24:15.465Z] [stderr] Debug info 17: Memory usage check
+[2025-07-28T18:24:15.475Z] [stdout] Log message 18: Processing item 18
+[2025-07-28T18:24:15.475Z] [stderr] Debug info 18: Memory usage check
+[2025-07-28T18:24:15.486Z] [stdout] Log message 19: Processing item 19
+[2025-07-28T18:24:15.486Z] [stderr] Debug info 19: Memory usage check
+[2025-07-28T18:24:15.497Z] [stdout] Log message 20: Processing item 20
+[2025-07-28T18:24:15.497Z] [stderr] Debug info 20: Memory usage check
+[2025-07-28T18:24:15.508Z] [stdout] Log message 21: Processing item 21
+[2025-07-28T18:24:15.508Z] [stderr] Debug info 21: Memory usage check
+[2025-07-28T18:24:15.518Z] [stdout] Log message 22: Processing item 22
+[2025-07-28T18:24:15.518Z] [stderr] Debug info 22: Memory usage check
+[2025-07-28T18:24:15.529Z] [stdout] Log message 23: Processing item 23
+[2025-07-28T18:24:15.530Z] [stderr] Debug info 23: Memory usage check
+[2025-07-28T18:24:15.540Z] [stdout] Log message 24: Processing item 24
+[2025-07-28T18:24:15.540Z] [stderr] Debug info 24: Memory usage check
+[2025-07-28T18:24:15.550Z] [stdout] Log message 25: Processing item 25
+[2025-07-28T18:24:15.550Z] [stderr] Debug info 25: Memory usage check
+[2025-07-28T18:24:15.561Z] [stdout] Log message 26: Processing item 26
+[2025-07-28T18:24:15.561Z] [stderr] Debug info 26: Memory usage check
+[2025-07-28T18:24:15.572Z] [stdout] Log message 27: Processing item 27
+[2025-07-28T18:24:15.572Z] [stderr] Debug info 27: Memory usage check
+[2025-07-28T18:24:15.582Z] [stdout] Log message 28: Processing item 28
+[2025-07-28T18:24:15.582Z] [stderr] Debug info 28: Memory usage check
+[2025-07-28T18:24:15.592Z] [stdout] Log message 29: Processing item 29
+[2025-07-28T18:24:15.592Z] [stderr] Debug info 29: Memory usage check
+[2025-07-28T18:24:15.603Z] [stdout] Log message 30: Processing item 30
+[2025-07-28T18:24:15.603Z] [stderr] Debug info 30: Memory usage check
+[2025-07-28T18:24:15.613Z] [stderr] Debug info 31: Memory usage check
+[2025-07-28T18:24:15.613Z] [stdout] Log message 31: Processing item 31
+[2025-07-28T18:24:15.623Z] [stdout] Log message 32: Processing item 32
+[2025-07-28T18:24:15.623Z] [stderr] Debug info 32: Memory usage check
+[2025-07-28T18:24:15.634Z] [stdout] Log message 33: Processing item 33
+[2025-07-28T18:24:15.634Z] [stderr] Debug info 33: Memory usage check
+[2025-07-28T18:24:15.645Z] [stderr] Debug info 34: Memory usage check
+[2025-07-28T18:24:15.645Z] [stdout] Log message 34: Processing item 34
+[2025-07-28T18:24:15.656Z] [stdout] Log message 35: Processing item 35
+[2025-07-28T18:24:15.656Z] [stderr] Debug info 35: Memory usage check
+[2025-07-28T18:24:15.667Z] [stdout] Log message 36: Processing item 36
+[2025-07-28T18:24:15.667Z] [stderr] Debug info 36: Memory usage check
+[2025-07-28T18:24:15.677Z] [stderr] Debug info 37: Memory usage check
+[2025-07-28T18:24:15.677Z] [stdout] Log message 37: Processing item 37
+[2025-07-28T18:24:15.687Z] [stdout] Log message 38: Processing item 38
+[2025-07-28T18:24:15.687Z] [stderr] Debug info 38: Memory usage check
+[2025-07-28T18:24:15.699Z] [stderr] Debug info 39: Memory usage check
+[2025-07-28T18:24:15.699Z] [stdout] Log message 39: Processing item 39
+[2025-07-28T18:24:15.709Z] [stdout] Log message 40: Processing item 40
+[2025-07-28T18:24:15.709Z] [stderr] Debug info 40: Memory usage check
+[2025-07-28T18:24:15.720Z] [stderr] Debug info 41: Memory usage check
+[2025-07-28T18:24:15.720Z] [stdout] Log message 41: Processing item 41
+[2025-07-28T18:24:15.730Z] [stdout] Log message 42: Processing item 42
+[2025-07-28T18:24:15.730Z] [stderr] Debug info 42: Memory usage check
+[2025-07-28T18:24:15.741Z] [stdout] Log message 43: Processing item 43
+[2025-07-28T18:24:15.741Z] [stderr] Debug info 43: Memory usage check
+[2025-07-28T18:24:15.752Z] [stderr] Debug info 44: Memory usage check
+[2025-07-28T18:24:15.752Z] [stdout] Log message 44: Processing item 44
+[2025-07-28T18:24:15.763Z] [stdout] Log message 45: Processing item 45
+[2025-07-28T18:24:15.763Z] [stderr] Debug info 45: Memory usage check
+[2025-07-28T18:24:15.774Z] [stdout] Log message 46: Processing item 46
+[2025-07-28T18:24:15.774Z] [stderr] Debug info 46: Memory usage check
+[2025-07-28T18:24:15.785Z] [stdout] Log message 47: Processing item 47
+[2025-07-28T18:24:15.785Z] [stderr] Debug info 47: Memory usage check
+[2025-07-28T18:24:15.795Z] [stdout] Log message 48: Processing item 48
+[2025-07-28T18:24:15.795Z] [stderr] Debug info 48: Memory usage check
+[2025-07-28T18:24:15.805Z] [stderr] Debug info 49: Memory usage check
+[2025-07-28T18:24:15.805Z] [stdout] Log message 49: Processing item 49
+[2025-07-28T18:24:15.816Z] [stderr] Debug info 50: Memory usage check
+[2025-07-28T18:24:15.816Z] [stdout] Log message 50: Processing item 50
+[2025-07-28T18:24:15.827Z] [stderr] Debug info 51: Memory usage check
+[2025-07-28T18:24:15.827Z] [stdout] Log message 51: Processing item 51
+[2025-07-28T18:24:15.838Z] [stdout] Log message 52: Processing item 52
+[2025-07-28T18:24:15.838Z] [stderr] Debug info 52: Memory usage check
+[2025-07-28T18:24:15.848Z] [stdout] Log message 53: Processing item 53
+[2025-07-28T18:24:15.848Z] [stderr] Debug info 53: Memory usage check
+[2025-07-28T18:24:15.858Z] [stdout] Process stopped
+[2025-07-28T18:24:15.859Z] [stdout] Log message 54: Processing item 54
+[2025-07-28T18:24:15.859Z] [stderr] Debug info 54: Memory usage check
+[2025-07-28T18:24:15.859Z] [stdout] Process restarting (attempt 1)
+[2025-07-28T18:24:15.870Z] [stdout] Log message 55: Processing item 55
+[2025-07-28T18:24:15.870Z] [stderr] Debug info 55: Memory usage check
+[2025-07-28T18:24:15.880Z] [stdout] Log message 56: Processing item 56
+[2025-07-28T18:24:15.880Z] [stderr] Debug info 56: Memory usage check
+[2025-07-28T18:24:15.891Z] [stdout] Log message 57: Processing item 57
+[2025-07-28T18:24:15.891Z] [stderr] Debug info 57: Memory usage check
+[2025-07-28T18:24:15.902Z] [stdout] Log message 58: Processing item 58
+[2025-07-28T18:24:15.902Z] [stderr] Debug info 58: Memory usage check
+[2025-07-28T18:24:15.913Z] [stdout] Log message 59: Processing item 59
+[2025-07-28T18:24:15.913Z] [stderr] Debug info 59: Memory usage check
+[2025-07-28T18:24:15.924Z] [stdout] Log message 60: Processing item 60
+[2025-07-28T18:24:15.924Z] [stderr] Debug info 60: Memory usage check
+[2025-07-28T18:24:15.934Z] [stderr] Debug info 61: Memory usage check
+[2025-07-28T18:24:15.934Z] [stdout] Log message 61: Processing item 61
+[2025-07-28T18:24:15.944Z] [stdout] Log message 62: Processing item 62
+[2025-07-28T18:24:15.944Z] [stderr] Debug info 62: Memory usage check
+[2025-07-28T18:24:15.955Z] [stderr] Debug info 63: Memory usage check
+[2025-07-28T18:24:15.955Z] [stdout] Log message 63: Processing item 63
+[2025-07-28T18:24:15.961Z] [stdout] Process started: node /Users/ashishsingh/Desktop/sandboxsdk-dev-worker/tests/temp/test-1753727055960/simple-test.js
+[2025-07-28T18:24:15.966Z] [stdout] Log message 64: Processing item 64
+[2025-07-28T18:24:15.966Z] [stderr] Debug info 64: Memory usage check
+[2025-07-28T18:24:15.977Z] [stderr] Debug info 65: Memory usage check
+[2025-07-28T18:24:15.977Z] [stdout] Log message 65: Processing item 65
+[2025-07-28T18:24:15.987Z] [stdout] Log message 66: Processing item 66
+[2025-07-28T18:24:15.987Z] [stderr] Debug info 66: Memory usage check
+[2025-07-28T18:24:15.993Z] [stdout] Simple test script running
+[2025-07-28T18:24:15.998Z] [stderr] Debug info 67: Memory usage check
+[2025-07-28T18:24:15.998Z] [stdout] Log message 67: Processing item 67
+[2025-07-28T18:24:16.009Z] [stdout] Log message 68: Processing item 68
+[2025-07-28T18:24:16.009Z] [stderr] Debug info 68: Memory usage check
+[2025-07-28T18:24:16.020Z] [stdout] Log message 69: Processing item 69
+[2025-07-28T18:24:16.020Z] [stderr] Debug info 69: Memory usage check
+[2025-07-28T18:24:16.030Z] [stdout] Log message 70: Processing item 70
+[2025-07-28T18:24:16.030Z] [stderr] Debug info 70: Memory usage check
+[2025-07-28T18:24:16.041Z] [stdout] Log message 71: Processing item 71
+[2025-07-28T18:24:16.041Z] [stderr] Debug info 71: Memory usage check
+[2025-07-28T18:24:16.052Z] [stdout] Log message 72: Processing item 72
+[2025-07-28T18:24:16.052Z] [stderr] Debug info 72: Memory usage check
+[2025-07-28T18:24:16.063Z] [stdout] Log message 73: Processing item 73
+[2025-07-28T18:24:16.063Z] [stderr] Debug info 73: Memory usage check
+[2025-07-28T18:24:16.073Z] [stdout] Log message 74: Processing item 74
+[2025-07-28T18:24:16.073Z] [stderr] Debug info 74: Memory usage check
+[2025-07-28T18:24:16.085Z] [stdout] Log message 75: Processing item 75
+[2025-07-28T18:24:16.085Z] [stderr] Debug info 75: Memory usage check
+[2025-07-28T18:24:16.096Z] [stdout] Log message 76: Processing item 76
+[2025-07-28T18:24:16.096Z] [stderr] Debug info 76: Memory usage check
+[2025-07-28T18:24:16.106Z] [stdout] Log message 77: Processing item 77
+[2025-07-28T18:24:16.106Z] [stderr] Debug info 77: Memory usage check
+[2025-07-28T18:24:16.117Z] [stdout] Log message 78: Processing item 78
+[2025-07-28T18:24:16.117Z] [stderr] Debug info 78: Memory usage check
+[2025-07-28T18:24:16.127Z] [stdout] Log message 79: Processing item 79
+[2025-07-28T18:24:16.127Z] [stderr] Debug info 79: Memory usage check
+[2025-07-28T18:24:16.138Z] [stdout] Log message 80: Processing item 80
+[2025-07-28T18:24:16.138Z] [stderr] Debug info 80: Memory usage check
+[2025-07-28T18:24:16.149Z] [stdout] Log message 81: Processing item 81
+[2025-07-28T18:24:16.149Z] [stderr] Debug info 81: Memory usage check
+[2025-07-28T18:24:16.160Z] [stderr] Debug info 82: Memory usage check
+[2025-07-28T18:24:16.160Z] [stdout] Log message 82: Processing item 82
+[2025-07-28T18:24:16.161Z] [stdout] Process stopping...
+[2025-07-28T18:24:16.163Z] [stdout] Process exited with code null (signal: SIGTERM)
+[2025-07-28T18:24:16.163Z] [stdout] Process stopped

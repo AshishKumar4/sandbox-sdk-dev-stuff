@@ -18,8 +18,8 @@ import {
   LogCursor,
   LogRetrievalResponse,
   Result,
-  ERROR_DB_PATH,
-  LOG_DB_PATH,
+  getErrorDbPath,
+  getLogDbPath,
   ERROR_HASH_ALGORITHM,
   DEFAULT_STORAGE_OPTIONS,
   DEFAULT_LOG_STORE_OPTIONS
@@ -49,8 +49,8 @@ export class StorageManager {
   };
 
   constructor(
-    errorDbPath: string = ERROR_DB_PATH,
-    logDbPath: string = LOG_DB_PATH,
+    errorDbPath: string = getErrorDbPath(),
+    logDbPath: string = getLogDbPath(),
     options: { error?: ErrorStoreOptions; log?: LogStoreOptions } = {}
   ) {
     this.options = {
@@ -87,13 +87,26 @@ export class StorageManager {
   }
 
   private initializeDatabase(dbPath: string): Database {
+    const fs = require('fs');
+    
+    // Check if database already exists to avoid race conditions during initialization
+    const dbExists = fs.existsSync(dbPath);
+    
     const db = new Database(dbPath);
     
-    // Optimal performance settings for container environment
-    db.exec('PRAGMA journal_mode = WAL');
-    db.exec('PRAGMA synchronous = NORMAL');
-    db.exec('PRAGMA cache_size = 10000');
-    db.exec('PRAGMA temp_store = memory');
+    // Only set pragmas if this is a new database to avoid conflicts
+    if (!dbExists) {
+      try {
+        // Optimal performance settings for container environment
+        db.exec('PRAGMA journal_mode = WAL');
+        db.exec('PRAGMA synchronous = NORMAL');
+        db.exec('PRAGMA cache_size = 10000');
+        db.exec('PRAGMA temp_store = memory');
+      } catch (error) {
+        // If pragma setup fails (due to concurrent access), continue anyway
+        console.warn('Database pragma setup failed (this is okay if database already initialized):', error);
+      }
+    }
     
     return db;
   }
@@ -108,19 +121,35 @@ export class StorageManager {
 
   // Error storage methods
   public storeError(instanceId: string, processId: string, error: ParsedError): Result<boolean> {
-    return this.errorStorage.storeError(instanceId, processId, error);
+    try {
+      return this.retryOperation(() => this.errorStorage.storeError(instanceId, processId, error));
+    } catch (retryError) {
+      return { success: false, error: retryError instanceof Error ? retryError : new Error(String(retryError)) };
+    }
   }
 
   public getErrors(instanceId: string): Result<StoredError[]> {
-    return this.errorStorage.getErrors(instanceId);
+    try {
+      return this.retryOperation(() => this.errorStorage.getErrors(instanceId));
+    } catch (retryError) {
+      return { success: false, error: retryError instanceof Error ? retryError : new Error(String(retryError)) };
+    }
   }
 
   public getErrorSummary(instanceId: string): Result<ErrorSummary> {
-    return this.errorStorage.getErrorSummary(instanceId);
+    try {
+      return this.retryOperation(() => this.errorStorage.getErrorSummary(instanceId));
+    } catch (retryError) {
+      return { success: false, error: retryError instanceof Error ? retryError : new Error(String(retryError)) };
+    }
   }
 
   public clearErrors(instanceId: string): Result<{ clearedCount: number }> {
-    return this.errorStorage.clearErrors(instanceId);
+    try {
+      return this.retryOperation(() => this.errorStorage.clearErrors(instanceId));
+    } catch (retryError) {
+      return { success: false, error: retryError instanceof Error ? retryError : new Error(String(retryError)) };
+    }
   }
 
   // Log storage methods
@@ -136,13 +165,6 @@ export class StorageManager {
     return this.logStorage.getLogs(filter);
   }
 
-  public getLogsSinceCursor(cursor: LogCursor, limit: number = 1000): Result<LogRetrievalResponse> {
-    return this.logStorage.getLogsSinceCursor(cursor, limit);
-  }
-
-  public getRecentLogs(instanceId: string, count: number = 100): StoredLog[] {
-    return this.logStorage.getRecentLogs(instanceId, count);
-  }
 
   public clearLogs(instanceId: string): Result<{ clearedCount: number }> {
     return this.logStorage.clearLogs(instanceId);
@@ -156,6 +178,40 @@ export class StorageManager {
     newestLog?: Date;
   }> {
     return this.logStorage.getLogStats(instanceId);
+  }
+
+  /**
+   * Retry operation with exponential backoff for SQLITE_BUSY errors
+   * Uses synchronous retry for immediate operations to maintain performance
+   */
+  private retryOperation<T>(operation: () => T, maxAttempts: number = 3): T {
+    let lastError: Error;
+    
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return operation();
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        
+        // Check if it's a SQLite busy error
+        if (lastError.message.includes('SQLITE_BUSY') || lastError.message.includes('database is locked')) {
+          if (attempt < maxAttempts) {
+            // Use minimal delay for SQLite contention - most resolve quickly
+            const delay = Math.min(10 * Math.pow(2, attempt - 1), 100); // Cap at 100ms
+            const start = Date.now();
+            while (Date.now() - start < delay) {
+              // Minimal busy wait for SQLite - usually resolves in microseconds
+            }
+            continue;
+          }
+        }
+        
+        // If not a busy error, or max attempts reached, throw immediately
+        throw lastError;
+      }
+    }
+    
+    throw lastError!;
   }
 
   /**
@@ -407,8 +463,6 @@ class LogStorage {
   private getLastSequenceStmt: ReturnType<Database['query']>;
   private deleteAllLogsStmt: ReturnType<Database['query']>;
 
-  // In-memory buffer for recent logs
-  private recentLogsBuffer = new Map<string, StoredLog[]>();
   private sequenceCounter = 0;
 
   constructor(db: Database, options: Required<LogStoreOptions>) {
@@ -499,20 +553,6 @@ class LogStorage {
         log.metadata ? JSON.stringify(log.metadata) : null, sequence
       );
 
-      // Update in-memory buffer
-      this.updateRecentLogsBuffer(log.instanceId, {
-        id: sequence,
-        instanceId: log.instanceId,
-        processId: log.processId,
-        level: log.level,
-        message: log.message,
-        timestamp: now,
-        stream: log.stream,
-        source: log.source,
-        metadata: log.metadata ? JSON.stringify(log.metadata) : null,
-        sequence,
-        createdAt: now
-      });
 
       return { success: true, data: sequence };
     } catch (error) {
@@ -584,47 +624,6 @@ class LogStorage {
     }
   }
 
-  public getLogsSinceCursor(cursor: LogCursor, limit: number = 1000): Result<LogRetrievalResponse> {
-    try {
-      const logs = this.selectLogsSinceStmt.all(
-        cursor.instanceId, 
-        cursor.lastSequence, 
-        limit
-      ) as StoredLog[];
-
-      const newLastSequence = logs.length > 0 ? 
-        Math.max(...logs.map(l => l.sequence)) : 
-        cursor.lastSequence;
-
-      const newCursor: LogCursor = {
-        instanceId: cursor.instanceId,
-        lastSequence: newLastSequence,
-        lastRetrieved: new Date()
-      };
-
-      const hasMore = logs.length === limit;
-
-      return {
-        success: true,
-        data: {
-          success: true,
-          logs,
-          cursor: newCursor,
-          hasMore
-        }
-      };
-    } catch (error) {
-      return { 
-        success: false, 
-        error: error instanceof Error ? error : new Error('Unknown error retrieving logs since cursor') 
-      };
-    }
-  }
-
-  public getRecentLogs(instanceId: string, count: number = 100): StoredLog[] {
-    const buffer = this.recentLogsBuffer.get(instanceId) || [];
-    return buffer.slice(-count);
-  }
 
   public clearLogs(instanceId: string): Result<{ clearedCount: number }> {
     try {
@@ -632,7 +631,6 @@ class LogStorage {
       const clearedCount = countResult?.count || 0;
       
       this.deleteAllLogsStmt.run(instanceId);
-      this.recentLogsBuffer.delete(instanceId);
 
       return { success: true, data: { clearedCount } };
     } catch (error) {
@@ -717,20 +715,7 @@ class LogStorage {
     }
   }
 
-  private updateRecentLogsBuffer(instanceId: string, log: StoredLog): void {
-    if (!this.recentLogsBuffer.has(instanceId)) {
-      this.recentLogsBuffer.set(instanceId, []);
-    }
-
-    const buffer = this.recentLogsBuffer.get(instanceId)!;
-    buffer.push(log);
-
-    if (buffer.length > this.options.bufferSize) {
-      buffer.splice(0, buffer.length - this.options.bufferSize);
-    }
-  }
-
   public close(): void {
-    this.recentLogsBuffer.clear();
+    // Database connection is managed by StorageManager
   }
 }

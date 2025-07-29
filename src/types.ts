@@ -58,6 +58,7 @@ export const InstanceDetailsSchema = z.object({
     startTime: z.union([z.string(), z.date()]),
     uptime: z.number(),
     previewURL: z.string().optional(),
+    tunnelUrl: z.string().optional(),
     directory: z.string(),
     serviceDirectory: z.string(),
     fileTree: FileTreeNodeSchema.optional(),
@@ -329,6 +330,7 @@ export const CodeIssuesResponseSchema = z.object({
             warningCount: z.number(),
             infoCount: z.number()
         }).optional(),
+        rawOutput: z.string().optional(),
     }),
     typecheck: z.object({
         issues: z.array(CodeIssueSchema),
@@ -337,6 +339,7 @@ export const CodeIssuesResponseSchema = z.object({
             warningCount: z.number(),
             infoCount: z.number()
         }).optional(),
+        rawOutput: z.string().optional(),
     }),
     error: z.string().optional()
 })
@@ -544,10 +547,3 @@ export const ResumeInstanceResponseSchema = z.object({
     error: z.string().optional(),
 })
 export type ResumeInstanceResponse = z.infer<typeof ResumeInstanceResponseSchema>
-
-// --- Enhanced Error Management Types (for internal monitoring system) ---
-
-// Simple options for enhanced error retrieval
-export interface EnhancedErrorOptions {
-  autoClear?: boolean;
-}

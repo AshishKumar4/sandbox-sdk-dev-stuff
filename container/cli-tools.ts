@@ -25,8 +25,82 @@ import {
   DEFAULT_STORAGE_OPTIONS,
   DEFAULT_LOG_STORE_OPTIONS,
   ErrorSeverity,
-  ErrorCategory
+  ErrorCategory,
+  getDataDirectory,
+  getErrorDbPath,
+  getLogDbPath
 } from './types.js';
+
+/**
+ * Safe JSON operations with circular reference protection
+ */
+class SafeJSON {
+  /**
+   * Safely stringify data with circular reference protection
+   */
+  static stringify(data: unknown, space?: number): string {
+    try {
+      const seen = new WeakSet();
+      const json = JSON.stringify(data, (_key, value) => {
+        if (typeof value === 'object' && value !== null) {
+          if (seen.has(value)) {
+            return '[Circular Reference]';
+          }
+          seen.add(value);
+        }
+        return value;
+      }, space);
+      return json;
+    } catch (error) {
+      // Fallback for any stringify errors
+      return JSON.stringify({
+        error: 'Failed to serialize data',
+        type: typeof data,
+        string: String(data).substring(0, 200)
+      }, null, space);
+    }
+  }
+
+  /**
+   * Safely parse JSON with fallback
+   */
+  static parse(text: string): unknown {
+    try {
+      return JSON.parse(text);
+    } catch (error) {
+      // Return error object for failed parsing
+      return {
+        success: false,
+        error: 'Invalid JSON format',
+        rawText: text.substring(0, 200)
+      };
+    }
+  }
+}
+
+/**
+ * Safe resource cleanup utilities
+ */
+class SafeCleanup {
+  /**
+   * Safely close storage with timeout
+   */
+  static async closeStorage(storage: StorageManager | null, timeoutMs: number = 2000): Promise<void> {
+    if (!storage) return;
+    
+    try {
+      const timeout = setTimeout(() => {
+        console.warn('Storage close timeout, forcing cleanup');
+      }, timeoutMs);
+      
+      storage.close();
+      clearTimeout(timeout);
+    } catch (error) {
+      console.warn('Storage close error:', error);
+      // Don't throw - we're in cleanup
+    }
+  }
+}
 
 /**
  * Shared output formatting utilities
@@ -38,7 +112,7 @@ class OutputFormatter {
   static formatOutput(data: unknown, format: 'json' | 'table' | 'raw' = 'json'): void {
     switch (format) {
       case 'json':
-        console.log(JSON.stringify(data, null, 2));
+        console.log(SafeJSON.stringify(data, 2));
         break;
       case 'raw':
         if (typeof data === 'string') {
@@ -49,7 +123,7 @@ class OutputFormatter {
         break;
       case 'table':
         // Table formatting is handled by specific formatters
-        console.log(JSON.stringify(data, null, 2));
+        console.log(SafeJSON.stringify(data, 2));
         break;
     }
   }
@@ -63,7 +137,7 @@ class OutputFormatter {
       error,
       ...additionalData
     };
-    console.log(JSON.stringify(errorResponse, null, 2));
+    console.log(SafeJSON.stringify(errorResponse, 2));
   }
 
   /**
@@ -77,7 +151,7 @@ class OutputFormatter {
     if (data) {
       successResponse.data = data;
     }
-    console.log(JSON.stringify(successResponse, null, 2));
+    console.log(SafeJSON.stringify(successResponse, 2));
   }
 
   /**
@@ -225,13 +299,26 @@ class ProcessCommands {
         }
       }, 60000); // Every minute
 
-      // Setup graceful shutdown
+      // Setup graceful shutdown with race condition protection
+      let isShuttingDown = false;
       const gracefulShutdown = async (signal: string) => {
+        if (isShuttingDown) {
+          console.log(`\nAlready shutting down, ignoring ${signal}`);
+          return;
+        }
+        isShuttingDown = true;
+        
         console.log(`\nReceived ${signal}. Initiating graceful shutdown...`);
         clearInterval(statusInterval);
-        await runner.stop();
-        this.activeRunners.delete(options.instanceId);
-        console.log('Graceful shutdown completed');
+        
+        try {
+          await runner.stop();
+          this.activeRunners.delete(options.instanceId);
+          console.log('Graceful shutdown completed');
+        } catch (shutdownError) {
+          console.error('Error during shutdown:', shutdownError);
+        }
+        
         process.exit(0);
       };
 
@@ -448,10 +535,12 @@ class ErrorCommands {
     format?: 'json' | 'table' | 'raw';
     dbPath?: string;
   }): Promise<void> {
-    const storage = new StorageManager(options.dbPath);
+    let storage: StorageManager | null = null;
     
     try {
+      storage = new StorageManager(options.dbPath);
       const result = storage.getErrors(options.instanceId);
+      
       if (!result.success) {
         throw result.error;
       }
@@ -506,15 +595,32 @@ class ErrorCommands {
       } else {
         OutputFormatter.formatOutput(response, options.format);
       }
+      
+      // Explicit exit after successful execution
+      process.exit(0);
 
     } catch (error) {
-      OutputFormatter.formatError(
-        error instanceof Error ? error.message : String(error),
-        { instanceId: options.instanceId }
-      );
+      try {
+        OutputFormatter.formatError(
+          error instanceof Error ? error.message : String(error),
+          { instanceId: options.instanceId }
+        );
+      } catch (formatError) {
+        // Fallback if formatting fails
+        console.error(SafeJSON.stringify({ success: false, error: String(error) }));
+      }
+      
+      // Ensure cleanup before exit
+      if (storage) {
+        try {
+          storage.close();
+        } catch (closeError) {
+          // Ignore close errors
+        }
+      }
       process.exit(1);
     } finally {
-      storage.close();
+      await SafeCleanup.closeStorage(storage);
     }
   }
 
@@ -537,6 +643,9 @@ class ErrorCommands {
       };
 
       OutputFormatter.formatOutput(response);
+      
+      // Explicit exit after successful execution
+      process.exit(0);
 
     } catch (error) {
       OutputFormatter.formatError(
@@ -545,7 +654,7 @@ class ErrorCommands {
       );
       process.exit(1);
     } finally {
-      storage.close();
+      await SafeCleanup.closeStorage(storage);
     }
   }
 
@@ -573,6 +682,9 @@ class ErrorCommands {
       };
 
       OutputFormatter.formatOutput(response);
+      
+      // Explicit exit after successful execution
+      process.exit(0);
 
     } catch (error) {
       OutputFormatter.formatError(
@@ -581,7 +693,7 @@ class ErrorCommands {
       );
       process.exit(1);
     } finally {
-      storage.close();
+      await SafeCleanup.closeStorage(storage);
     }
   }
 
@@ -641,6 +753,9 @@ class LogCommands {
       } else {
         OutputFormatter.formatOutput(response, options.format);
       }
+      
+      // Explicit exit after successful execution
+      process.exit(0);
 
     } catch (error) {
       OutputFormatter.formatError(
@@ -649,132 +764,103 @@ class LogCommands {
       );
       process.exit(1);
     } finally {
-      storage.close();
+      await SafeCleanup.closeStorage(storage);
     }
   }
 
-  /**
-   * Get logs since cursor (for getAllRecentLogs functionality)
-   */
-  static async since(options: {
-    instanceId: string;
-    lastSequence: number;
-    limit?: number;
-    format?: 'json' | 'table' | 'raw';
-    dbPath?: string;
-  }): Promise<void> {
-    const storage = new StorageManager(undefined, options.dbPath);
-    
-    try {
-      const cursor: LogCursor = {
-        instanceId: options.instanceId,
-        lastSequence: options.lastSequence,
-        lastRetrieved: new Date()
-      };
 
-      const result = storage.getLogsSinceCursor(cursor, options.limit || 1000);
-      if (!result.success) {
-        throw result.error;
-      }
-
-      const response = result.data;
-
-      if (options.format === 'table') {
-        OutputFormatter.printLogsTable(response.logs);
-      } else if (options.format === 'raw') {
-        response.logs.forEach(log => console.log(log.message));
-      } else {
-        OutputFormatter.formatOutput(response, options.format);
-      }
-
-    } catch (error) {
-      OutputFormatter.formatError(
-        error instanceof Error ? error.message : String(error),
-        { instanceId: options.instanceId, lastSequence: options.lastSequence }
-      );
-      process.exit(1);
-    } finally {
-      storage.close();
-    }
-  }
 
   /**
-   * Get recent logs from buffer
+   * Get all process logs from file with optional reset
    */
-  static async recent(options: {
-    instanceId: string;
-    count?: number;
-    format?: 'json' | 'table' | 'raw';
-    dbPath?: string;
-  }): Promise<void> {
-    const storage = new StorageManager(undefined, options.dbPath);
-    
-    try {
-      const logs = storage.getRecentLogs(options.instanceId, options.count || 100);
-
-      if (options.format === 'table') {
-        OutputFormatter.printLogsTable(logs);
-      } else if (options.format === 'raw') {
-        logs.forEach(log => console.log(log.message));
-      } else {
-        const response = {
-          success: true,
-          logs,
-          total: logs.length
-        };
-        OutputFormatter.formatOutput(response, options.format);
-      }
-
-    } catch (error) {
-      OutputFormatter.formatError(
-        error instanceof Error ? error.message : String(error),
-        { instanceId: options.instanceId }
-      );
-      process.exit(1);
-    } finally {
-      storage.close();
-    }
-  }
-
-  /**
-   * Get all logs from simple log file and reset it atomically
-   */
-  static async getAllAndReset(options: {
+  static async get(options: {
     instanceId: string;
     format?: 'json' | 'raw';
+    reset?: boolean;
   }): Promise<void> {
     try {
       const { promises: fs } = require('fs');
       const { join } = require('path');
       
-      const logFilePath = join('/app/data', `${options.instanceId}-process.log`);
-      const tempPath = `${logFilePath}.tmp.${Date.now()}`;
+      const logFilePath = join(getDataDirectory(), `${options.instanceId}-process.log`);
+      const lockFilePath = `${logFilePath}.lock`;
+      const tempPath = `${logFilePath}.tmp.${Date.now()}.${process.pid}`;
       
       let logs = '';
       
-      // Atomic operation: rename current file to temp, create new empty file
-      try {
-        await fs.rename(logFilePath, tempPath);
-        
-        // Create new empty log file immediately
-        await fs.writeFile(logFilePath, '', 'utf8').catch(() => {});
-        
-        // Read from temp file and clean up
+      // Simple file-based locking to prevent concurrent access
+      const acquireLock = async (): Promise<boolean> => {
         try {
-          logs = await fs.readFile(tempPath, 'utf8');
-          await fs.unlink(tempPath).catch(() => {}); // Clean up temp file
+          await fs.writeFile(lockFilePath, process.pid.toString(), { flag: 'wx' });
+          return true;
         } catch (error) {
-          // If we can't read temp file, at least clean it up
-          await fs.unlink(tempPath).catch(() => {});
-          logs = '';
+          return false;
         }
-      } catch (error) {
-        // File doesn't exist yet, return empty
-        if ((error as any).code === 'ENOENT') {
-          logs = '';
+      };
+      
+      const releaseLock = async (): Promise<void> => {
+        try {
+          await fs.unlink(lockFilePath);
+        } catch (error) {
+          // Ignore lock release errors
+        }
+      };
+      
+      // Try to acquire lock with retry
+      let lockAcquired = false;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        lockAcquired = await acquireLock();
+        if (lockAcquired) break;
+        
+        // Wait briefly before retry
+        await new Promise(resolve => setTimeout(resolve, 50 + Math.random() * 50));
+      }
+      
+      if (!lockAcquired) {
+        throw new Error('Could not acquire file lock for log reset operation');
+      }
+      
+      try {
+        if (options.reset) {
+          // Reset mode: Atomic operation to read and clear the file
+          try {
+            await fs.rename(logFilePath, tempPath);
+            
+            // Create new empty log file immediately
+            await fs.writeFile(logFilePath, '', 'utf8').catch(() => {});
+            
+            // Read from temp file and clean up
+            try {
+              logs = await fs.readFile(tempPath, 'utf8');
+              await fs.unlink(tempPath).catch(() => {}); // Clean up temp file
+            } catch (error) {
+              // If we can't read temp file, at least clean it up
+              await fs.unlink(tempPath).catch(() => {});
+              logs = '';
+            }
+          } catch (error) {
+            // File doesn't exist yet, return empty
+            if ((error as any).code === 'ENOENT') {
+              logs = '';
+            } else {
+              throw error;
+            }
+          }
         } else {
-          throw error;
+          // Read-only mode: Just read the file without resetting
+          try {
+            logs = await fs.readFile(logFilePath, 'utf8');
+          } catch (error) {
+            // File doesn't exist yet, return empty
+            if ((error as any).code === 'ENOENT') {
+              logs = '';
+            } else {
+              throw error;
+            }
+          }
         }
+      } finally {
+        await releaseLock();
       }
       
       if (options.format === 'raw') {
@@ -787,6 +873,9 @@ class LogCommands {
         };
         OutputFormatter.formatOutput(response, options.format);
       }
+      
+      // Explicit exit after successful execution
+      process.exit(0);
 
     } catch (error) {
       OutputFormatter.formatError(
@@ -816,6 +905,9 @@ class LogCommands {
       };
 
       OutputFormatter.formatOutput(response);
+      
+      // Explicit exit after successful execution
+      process.exit(0);
 
     } catch (error) {
       OutputFormatter.formatError(
@@ -824,7 +916,7 @@ class LogCommands {
       );
       process.exit(1);
     } finally {
-      storage.close();
+      await SafeCleanup.closeStorage(storage);
     }
   }
 
@@ -852,6 +944,9 @@ class LogCommands {
       };
 
       OutputFormatter.formatOutput(response);
+      
+      // Explicit exit after successful execution
+      process.exit(0);
 
     } catch (error) {
       OutputFormatter.formatError(
@@ -860,7 +955,7 @@ class LogCommands {
       );
       process.exit(1);
     } finally {
-      storage.close();
+      await SafeCleanup.closeStorage(storage);
     }
   }
 }
@@ -888,9 +983,7 @@ COMMANDS:
     
   logs                       Log management
     list                     List process logs
-    since                    Get logs since cursor position
-    recent                   Get recent logs from buffer
-    all                      Get ALL logs since last call (and reset log file)
+    get                      Get process logs with optional reset
     stats                    Get log statistics  
     clear                    Clear stored logs
 
@@ -927,17 +1020,14 @@ LOG COMMANDS:
   # List recent logs
   bun run cli-tools.ts logs list --instance-id my-app --limit 100
   
-  # Get logs since specific sequence (for getAllRecentLogs)
-  bun run cli-tools.ts logs since --instance-id my-app --last-sequence 1000
-  
   # Filter by log level and stream
   bun run cli-tools.ts logs list -i my-app --levels error,warn --streams stderr
   
-  # Get recent logs from buffer
-  bun run cli-tools.ts logs recent --instance-id my-app --count 50
+  # Get all process logs (for SandboxSdkClient)
+  bun run cli-tools.ts logs get --instance-id my-app --format raw
   
-  # Get ALL logs since last call (and reset log file) - for SandboxSdkClient
-  bun run cli-tools.ts logs all --instance-id my-app --format raw
+  # Get all process logs and reset log file
+  bun run cli-tools.ts logs get --instance-id my-app --format raw --reset
   
   # Get log statistics
   bun run cli-tools.ts logs stats --instance-id my-app
@@ -975,7 +1065,7 @@ EXAMPLES:
   # Complete workflow: start monitoring, check errors, view logs
   bun run cli-tools.ts process start -i vite-app -- bun run dev
   bun run cli-tools.ts errors list -i vite-app --format table
-  bun run cli-tools.ts logs recent -i vite-app --count 20 --format table
+  bun run cli-tools.ts logs get -i vite-app --format raw
   
   # Monitor production deployment
   bun run cli-tools.ts process start -i prod-api --max-restarts 10 -- node server.js
@@ -986,11 +1076,32 @@ EXAMPLES:
 Environment Variables:
   INSTANCE_ID               Default instance identifier
   PORT                      Port for the application
+  CLI_DATA_DIR              Data directory path (default: ./data)
+  CLI_ERROR_DB_PATH         Error database path (default: <CLI_DATA_DIR>/errors.db)
+  CLI_LOG_DB_PATH           Log database path (default: <CLI_DATA_DIR>/logs.db)
   
 Database Storage:
-  Errors: /app/data/errors.db (or custom path)
-  Logs:   /app/data/logs.db (or custom path)
+  Errors: ${getErrorDbPath()} (configurable via CLI_ERROR_DB_PATH)
+  Logs:   ${getLogDbPath()} (configurable via CLI_LOG_DB_PATH)
+  Data:   ${getDataDirectory()} (configurable via CLI_DATA_DIR)
 `);
+}
+
+/**
+ * Initialize data directory if it doesn't exist
+ */
+function initializeDataDirectory(): void {
+  const fs = require('fs');
+  const dataDir = getDataDirectory();
+  
+  try {
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+      console.log(`Created data directory: ${dataDir}`);
+    }
+  } catch (error) {
+    console.warn(`Failed to create data directory ${dataDir}:`, error);
+  }
 }
 
 /**
@@ -998,6 +1109,9 @@ Database Storage:
  */
 async function main() {
   try {
+    // Initialize data directory
+    initializeDataDirectory();
+    
     const { values: args, positionals } = parseArgs({
       args: process.argv.slice(2),
       options: {
@@ -1028,7 +1142,8 @@ async function main() {
         'offset': { type: 'string' },
         'last-sequence': { type: 'string' },
         'count': { type: 'string' },
-        'confirm': { type: 'boolean' }
+        'confirm': { type: 'boolean' },
+        'reset': { type: 'boolean' }
       },
       allowPositionals: true
     });
@@ -1197,44 +1312,16 @@ async function handleLogCommand(subcommand: string, args: Record<string, unknown
       });
       break;
       
-    case 'since':
-      if (!args['instance-id'] || !args['last-sequence']) {
-        OutputFormatter.formatError('--instance-id and --last-sequence are required for since command');
-        process.exit(1);
-      }
-      
-      await LogCommands.since({
-        instanceId: String(args['instance-id']),
-        lastSequence: parseInt(String(args['last-sequence'])),
-        limit: args.limit ? parseInt(String(args.limit)) : undefined,
-        format: args.format as 'json' | 'table' | 'raw',
-        dbPath: args['db-path'] ? String(args['db-path']) : undefined
-      });
-      break;
-      
-    case 'recent':
+    case 'get':
       if (!args['instance-id']) {
-        OutputFormatter.formatError('--instance-id is required for recent command');
+        OutputFormatter.formatError('--instance-id is required for get command');
         process.exit(1);
       }
       
-      await LogCommands.recent({
+      await LogCommands.get({
         instanceId: String(args['instance-id']),
-        count: args.count ? parseInt(String(args.count)) : undefined,
-        format: args.format as 'json' | 'table' | 'raw',
-        dbPath: args['db-path'] ? String(args['db-path']) : undefined
-      });
-      break;
-      
-    case 'all':
-      if (!args['instance-id']) {
-        OutputFormatter.formatError('--instance-id is required for all command');
-        process.exit(1);
-      }
-      
-      await LogCommands.getAllAndReset({
-        instanceId: String(args['instance-id']),
-        format: args.format as 'json' | 'raw'
+        format: args.format as 'json' | 'raw',
+        reset: Boolean(args.reset)
       });
       break;
       

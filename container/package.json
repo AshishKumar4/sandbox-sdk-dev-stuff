@@ -10,7 +10,7 @@
     "errors": "bun run cli-tools.ts errors",
     "logs": "bun run cli-tools.ts logs",
     "test": "bun test",
-    "clean": "rm -f /app/data/*.db"
+    "clean": "rm -f ./data/*.db"
   },
   "dependencies": {
     "zod": "^3.22.4"
