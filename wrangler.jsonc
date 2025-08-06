@@ -10,11 +10,27 @@
     "containers": [
       {
         "class_name": "Sandbox",
-        "image": "./Dockerfile",
-        "max_instances": 10,
+        "image": "./SandboxDockerfile",
+        "max_instances": 1,
         "configuration": {
           "vcpu": 4,
-          "memory_mib": 2048
+          "memory_mib": 2048,
+          "disk": {
+            "size": "20GB"
+          }
+        },
+        "rollout_step_percentage": 100
+      },
+      {
+        "class_name": "DeployerService",
+        "image": "./DeployerDockerfile",
+        "max_instances": 1,
+        "configuration": {
+          "vcpu": 4,
+          "memory_mib": 2048,
+          "disk": {
+            "size": "20GB"
+          }
         },
         "rollout_step_percentage": 100
       }
@@ -23,7 +39,11 @@
       "bindings": [
         {
           "class_name": "Sandbox",
-          "name": "Sandbox"
+          "name": "SandboxServiceObject"
+        },
+        {
+          "class_name": "DeployerService",
+          "name": "DeployerServiceObject"
         }
       ]
     },
@@ -31,14 +51,18 @@
       {
         "binding": "TEMPLATES_BUCKET",
         "bucket_name": "orange-build-templates",
-        "experimental_remote": true,
-        "preview_bucket_name": "orange-build-template-dev"
+        "experimental_remote": true
+        // "preview_bucket_name": "orange-build-template-dev"
       }
     ],
     "migrations": [
       {
         "new_sqlite_classes": ["Sandbox"],
         "tag": "v1"
+      },
+      {
+        "new_sqlite_classes": ["DeployerService"],
+        "tag": "v2"
       }
     ],
 	"observability": {
@@ -64,7 +88,10 @@
 	 * Environment Variables
 	 * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
 	 */
-	"vars": { "TEMPLATES_BUCKET_URL": "https://pub-a087c6e0b61c4f15984726f1f1b40594.r2.dev" }
+	"vars": { 
+		"TEMPLATES_BUCKET_URL": "https://pub-a087c6e0b61c4f15984726f1f1b40594.r2.dev",
+		// "AUTH_TOKEN": "your-secure-auth-token-here"
+	}
 	/**
 	 * Note: Use secrets to store sensitive data.
 	 * https://developers.cloudflare.com/workers/configuration/secrets/

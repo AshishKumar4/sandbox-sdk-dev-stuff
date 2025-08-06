@@ -34,9 +34,10 @@ import {
     ListInstancesResponse,
     SaveInstanceResponse,
     ResumeInstanceResponse
-  } from './types';
+  } from './sandboxTypes';
   
   import { createObjectLogger, StructuredLogger } from './logger';
+  import { env } from 'cloudflare:workers'
   /**
    * Streaming event for enhanced command execution
    */
@@ -82,36 +83,37 @@ import {
      * List all available templates
      * Returns: { success: boolean, templates: [...], count: number, error?: string }
      */
-      static async listTemplates(templatesBucketUrl: string): Promise<TemplateListResponse> {
-          try {
-              const catalogUrl = `${templatesBucketUrl}/template_catalog.json`;
-              const response = await fetch(catalogUrl);
-              
-              if (!response.ok) {
-                  throw new Error(`Failed to fetch template catalog: ${response.status} ${response.statusText}`);
-              }
-              
-              const templates = await response.json() as TemplateInfo[];
-  
-              return {
-                  success: true,
-                  templates: templates.map(t => ({
-                      name: t.name,
-                      language: t.language,
-                      frameworks: t.frameworks || [],
-                      description: t.description
-                  })),
-                  count: templates.length
-              };
-          } catch (error) {
-              return {
-                  success: false,
-                  templates: [],
-                  count: 0,
-                  error: `Failed to fetch templates: ${error instanceof Error ? error.message : 'Unknown error'}`
-              };
-          }
-      }
+    static async listTemplates(): Promise<TemplateListResponse> {
+        try {
+            const response = await env.TEMPLATES_BUCKET.get('template_catalog.json');
+            if (response === null) {
+                throw new Error(`Failed to fetch template catalog: Template catalog not found`);
+            }
+            
+            const templates = await response.json() as TemplateInfo[];
+
+            // For now, just filter out *next* templates
+            const filteredTemplates = templates.filter(t => !t.name.includes('next'));
+
+            return {
+                success: true,
+                templates: filteredTemplates.map(t => ({
+                    name: t.name,
+                    language: t.language,
+                    frameworks: t.frameworks || [],
+                    description: t.description
+                })),
+                count: filteredTemplates.length
+            };
+        } catch (error) {
+            return {
+                success: false,
+                templates: [],
+                count: 0,
+                error: `Failed to fetch templates: ${error instanceof Error ? error.message : 'Unknown error'}`
+            };
+        }
+    }
   
       /**
        * Get details for a specific template including files and structure

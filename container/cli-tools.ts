@@ -1,11 +1,5 @@
 #!/usr/bin/env bun
 
-/**
- * Unified CLI Tools for Process Monitoring System
- * Consolidates process-runner, error-manager, and log-manager into a single interface
- * Provides comprehensive management capabilities with shared utilities and consistent UX
- */
-
 import { parseArgs } from 'util';
 import { StorageManager } from './storage.js';
 import { ProcessMonitor } from './process-monitor.js';

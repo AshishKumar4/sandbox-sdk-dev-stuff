@@ -1,6 +1,5 @@
 import { getSandbox, Sandbox, parseSSEStream, type ExecEvent, ExecuteResponse, LogEvent } from '@cloudflare/sandbox';
 
-export { Sandbox as SandboxService };
 import {
     TemplateDetailsResponse,
     BootstrapResponse,
@@ -14,10 +13,8 @@ import {
     RuntimeErrorResponse,
     ClearErrorsResponse,
     StaticAnalysisResponse,
-    DeploymentCredentials,
     DeploymentResult,
     FileTreeNode,
-    TemplateFile,
     RuntimeError,
     CommandExecutionResult,
     CodeIssue,
@@ -30,19 +27,24 @@ import {
     ListInstancesResponse,
     SaveInstanceResponse,
     ResumeInstanceResponse,
-} from './types';
+} from './sandboxTypes';
 
 import { createObjectLogger } from './logger';
 import { env } from 'cloudflare:workers'
-import { BaseSandboxService } from './base';
+import { BaseSandboxService } from './BaseSandboxService';
+
+import { deployToCloudflareWorkers } from './deploymentService';
+
+// Export the Sandbox class in your Worker
+export { Sandbox as UserAppSandboxService, Sandbox as DeployerService, Sandbox} from "@cloudflare/sandbox";
 
 interface InstanceMetadata {
     templateName: string;
     projectName: string;
     startTime: string;
     webhookUrl?: string;
-    previewUrl?: string;
-    tunnelUrl?: string;
+    previewURL?: string;
+    tunnelURL?: string;
     processId?: string;
     allocatedPort?: number;
 }
@@ -60,15 +62,51 @@ export interface StreamEvent {
     timestamp: Date;
 }
   
+const NUM_CONTAINER_POOLS = 10;
+function getAutoAllocatedSandbox(sessionId: string): string {
+    // We have N containers and we can have M sessionIds at once. M >> N
+    // So we algorithmically assign sessionId to containerId
+    // SessionId are usually UUIDs, so we first convert it to an integer
+    
+    // Simple hash function to convert sessionId to integer
+    let hash = 0;
+    for (let i = 0; i < sessionId.length; i++) {
+      const char = sessionId.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    
+    // Make hash positive
+    hash = Math.abs(hash);
+    
+    // Consistently map to one of N containers
+    const containerIndex = hash % NUM_CONTAINER_POOLS;
+    
+    // Create a deterministic container ID based on the index
+    const containerId = `container-pool-${containerIndex}`;
+    
+    console.log(`Session ${sessionId} mapped to Sandbox ${containerId} (hash: ${hash}, index: ${containerIndex})`);
+    return containerId;
+}
+
 export class SandboxSdkClient extends BaseSandboxService {
     private sandbox: SandboxType;
     private hostname: string;
     private metadataCache = new Map<string, InstanceMetadata>();
     
-    constructor(sandboxId: string, hostname: string) {
-        super(sandboxId);
+    private envVars?: Record<string, string>;
+
+    constructor(sandboxId: string, hostname: string, envVars?: Record<string, string>) {
+        super(getAutoAllocatedSandbox(sandboxId));
         this.sandbox = this.getSandbox();
         this.hostname = hostname;
+        this.envVars = envVars;
+        // Set environment variables FIRST, before any other operations
+        if (this.envVars && Object.keys(this.envVars).length > 0) {
+            this.logger.info('Setting environment variables', { envVars: Object.keys(this.envVars) });
+            this.sandbox.setEnvVars(this.envVars);
+        }
+        
         this.logger = createObjectLogger(this, 'SandboxSdkClient');
         this.logger.setFields({
             sandboxId: this.sandboxId
@@ -87,7 +125,7 @@ export class SandboxSdkClient extends BaseSandboxService {
 
     private getSandbox(): SandboxType {
         if (!this.sandbox) {
-            this.sandbox = getSandbox(env.Sandbox, this.sandboxId);
+            this.sandbox = getSandbox(env.SandboxServiceObject, this.sandboxId);
         }
         return this.sandbox;
     }
@@ -194,17 +232,52 @@ export class SandboxSdkClient extends BaseSandboxService {
         return checkResult.exitCode === 0 && checkResult.stdout.trim() === "exists";
     }
 
-    private async ensureTemplateExists(templateName: string, downloadDir?: string) {
+    async downloadTemplate(templateName: string, downloadDir?: string) : Promise<ArrayBuffer> {
+        // Fetch the zip file from R2
+        let zipData: ArrayBuffer;
+        const downloadUrl = downloadDir ? `${downloadDir}/${templateName}.zip` : `${templateName}.zip`;
+        this.logger.info(`Fetching object: ${downloadUrl} from R2 bucket`);
+        const r2Object = await env.TEMPLATES_BUCKET.get(downloadUrl);
+          
+        if (!r2Object) {
+            throw new Error(`Object '${downloadUrl}' not found in bucket`);
+        }
+    
+        zipData = await r2Object.arrayBuffer();
+    
+        this.logger.info(`Downloaded zip file (${zipData.byteLength} bytes)`);
+        return zipData;
+    }
+
+    private async ensureTemplateExists(templateName: string, downloadDir?: string, isInstance: boolean = false) {
         if (!await this.checkTemplateExists(templateName)) {
             // Download and extract template
-            const templateUrl = `${env.TEMPLATES_BUCKET_URL}/${downloadDir ? `${downloadDir}/` : ''}${templateName}.zip`;
-            this.logger.info(`Template doesnt exist, Downloading template from: ${templateUrl}`);
+            this.logger.info(`Template doesnt exist, Downloading template from: ${templateName}`);
             
-            const downloadCmd = `mkdir -p ${templateName} && wget -q "${templateUrl}" -O "${templateName}.zip" && unzip -o -q "${templateName}.zip" -d ${templateName}`;
-            const downloadResult = await this.getSandbox().exec(downloadCmd);
+            // const downloadCmd = `mkdir -p ${templateName} && wget -q "${templateUrl}" -O "${templateName}.zip" && unzip -o -q "${templateName}.zip" -d ${templateName}`;
+
+            const zipData = await this.downloadTemplate(templateName, downloadDir);
+
+            const zipBuffer = new Uint8Array(zipData);
+            // Convert Uint8Array to base64 using Web API (compatible with Cloudflare Workers)
+            // Process in chunks to avoid stack overflow on large files
+            let binaryString = '';
+            const chunkSize = 0x8000; // 32KB chunks
+            for (let i = 0; i < zipBuffer.length; i += chunkSize) {
+                const chunk = zipBuffer.subarray(i, i + chunkSize);
+                binaryString += String.fromCharCode(...chunk);
+            }
+            const base64Data = btoa(binaryString);
+            await this.getSandbox().writeFile(`${templateName}.zip.b64`, base64Data);
+            
+            // Convert base64 back to binary zip file
+            await this.getSandbox().exec(`base64 -d ${templateName}.zip.b64 > ${templateName}.zip`);
+            this.logger.info(`Wrote and converted zip file to sandbox: ${templateName}.zip`);
+            
+            const setupResult = await this.getSandbox().exec(`unzip -o -q ${templateName}.zip -d ${isInstance ? '.' : templateName}`);
         
-            if (downloadResult.exitCode !== 0) {
-                throw new Error(`Failed to download/extract template: ${downloadResult.stderr}`);
+            if (setupResult.exitCode !== 0) {
+                throw new Error(`Failed to download/extract template: ${setupResult.stderr}`);
             }
         } else {
             this.logger.info(`Template already exists`);
@@ -240,7 +313,10 @@ export class SandboxSdkClient extends BaseSandboxService {
             }
 
             // Build file tree
-            const fileTree = this.buildFileTree(filesResponse.files);
+            const fileTree = await this.buildFileTree(templateName);
+            if (!fileTree) {
+                throw new Error(`Failed to build file tree for template ${templateName}`);
+            }
             
             const catalogInfo = await this.getTemplateFromCatalog(templateName);
             
@@ -274,7 +350,7 @@ export class SandboxSdkClient extends BaseSandboxService {
 
     private async getTemplateFromCatalog(templateName: string): Promise<TemplateInfo | null> {
         try {
-            const templatesResponse = await SandboxSdkClient.listTemplates(env.TEMPLATES_BUCKET_URL);
+            const templatesResponse = await SandboxSdkClient.listTemplates();
             if (templatesResponse.success) {
                 return templatesResponse.templates.find(t => t.name === templateName) || null;
             }
@@ -284,40 +360,68 @@ export class SandboxSdkClient extends BaseSandboxService {
         }
     }
 
-    private buildFileTree(files: TemplateFile[]): FileTreeNode {
-        const root: FileTreeNode = {
-            path: '',
-            type: 'directory',
-            children: []
-        };
+    private async buildFileTree(instanceId: string): Promise<FileTreeNode | undefined> {
+        try {
+            const buildTreeCmd = `echo "===FILES==="; find . -type d \\( -name "node_modules" -o -name ".git" -o -name "dist" -o -name ".wrangler" -o -name ".vscode" -o -name ".next" -o -name ".cache" -o -name ".idea" -o -name ".DS_Store" \\) -prune -o \\( -type f -not -name "*.jpg" -not -name "*.jpeg" -not -name "*.png" -not -name "*.gif" -not -name "*.svg" -not -name "*.ico" -not -name "*.webp" -not -name "*.bmp" \\) -print; echo "===DIRS==="; find . -type d \\( -name "node_modules" -o -name ".git" -o -name "dist" -o -name ".wrangler" -o -name ".vscode" -o -name ".next" -o -name ".cache" -o -name ".idea" -o -name ".DS_Store" \\) -prune -o -type d -print`;
 
-        files.forEach(file => {
-            const parts = file.file_path.split('/').filter(part => part);
-            let current = root;
+            const filesResult = await this.executeCommand(instanceId, buildTreeCmd);
+            if (filesResult.exitCode === 0) {
+                const output = filesResult.stdout.trim();
+                const sections = output.split('===DIRS===');
+                const fileSection = sections[0].replace('===FILES===', '').trim();
+                const dirSection = sections[1] ? sections[1].trim() : '';
+                
+                const files = fileSection.split('\n').filter(line => line.trim() && line !== '.');
+                const dirs = dirSection.split('\n').filter(line => line.trim() && line !== '.');
+                
+                // Create sets for quick lookup
+                const fileSet = new Set(files.map(f => f.startsWith('./') ? f.substring(2) : f));
+                // const dirSet = new Set(dirs.map(d => d.startsWith('./') ? d.substring(2) : d));
+                
+                // Combine all paths
+                const allPaths = [...files, ...dirs].map(path => 
+                    path.startsWith('./') ? path.substring(2) : path
+                ).filter(path => path && path !== '.');
+                
+                // Build tree with proper file/directory detection
+                const root: FileTreeNode = {
+                    path: '',
+                    type: 'directory',
+                    children: []
+                };
 
-            parts.forEach((_, index) => {
-                const isFile = index === parts.length - 1;
-                const path = parts.slice(0, index + 1).join('/');
-                
-                let child = current.children?.find(c => c.path === path);
-                
-                if (!child) {
-                    child = {
-                        path,
-                        type: isFile ? 'file' : 'directory',
-                        children: isFile ? undefined : []
-                    };
-                    current.children = current.children || [];
-                    current.children.push(child);
-                }
-                
-                if (!isFile) {
-                    current = child;
-                }
-            });
-        });
+                allPaths.forEach(filePath => {
+                    const parts = filePath.split('/').filter(part => part);
+                    let current = root;
 
-        return root;
+                    parts.forEach((_, index) => {
+                        const path = parts.slice(0, index + 1).join('/');
+                        const isFile = fileSet.has(path);
+                        
+                        let child = current.children?.find(c => c.path === path);
+                        
+                        if (!child) {
+                            child = {
+                                path,
+                                type: isFile ? 'file' : 'directory',
+                                children: isFile ? undefined : []
+                            };
+                            current.children = current.children || [];
+                            current.children.push(child);
+                        }
+                        
+                        if (!isFile) {
+                            current = child;
+                        }
+                    });
+                });
+
+                return root;
+            }
+        } catch (error) {
+            this.logger.warn('Failed to build file tree', error);
+        }
+        return undefined;
     }
 
     // ==========================================
@@ -372,9 +476,9 @@ export class SandboxSdkClient extends BaseSandboxService {
                         uptime: Math.floor((Date.now() - new Date(metadata.startTime).getTime()) / 1000),
                         directory: instanceId,
                         serviceDirectory: instanceId,
-                        previewURL: metadata.previewUrl,
+                        previewURL: metadata.previewURL,
                         processId: metadata.processId,
-                        tunnelUrl: metadata.tunnelUrl,
+                        tunnelURL: metadata.tunnelURL,
                         // Skip file tree
                         fileTree: undefined,
                         runtimeErrors: undefined
@@ -433,7 +537,7 @@ export class SandboxSdkClient extends BaseSandboxService {
             return new Promise<string>((resolve, reject) => {
                 const timeout = setTimeout(() => {
                     reject(new Error('Timeout waiting for cloudflared tunnel URL'));
-                }, 10000); // 10 second timeout
+                }, 20000); // 20 second timeout
 
                 const processLogs = async () => {
                     try {
@@ -447,9 +551,9 @@ export class SandboxSdkClient extends BaseSandboxService {
                                 const urlMatch = logLine.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
                                 if (urlMatch) {
                                     clearTimeout(timeout);
-                                    const previewUrl = urlMatch[0];
-                                    this.logger.info(`Found cloudflared tunnel URL: ${previewUrl}`);
-                                    resolve(previewUrl);
+                                    const previewURL = urlMatch[0];
+                                    this.logger.info(`Found cloudflared tunnel URL: ${previewURL}`);
+                                    resolve(previewURL);
                                     return;
                                 }
                             }
@@ -468,55 +572,104 @@ export class SandboxSdkClient extends BaseSandboxService {
         }
     }
 
-    private async setupInstance(templateName: string, instanceId: string): Promise<{previewUrl: string, tunnelUrl: string, processId: string, allocatedPort: number} | undefined> {
+
+    /**
+     * Updates project configuration files with the specified project name
+     */
+    private async updateProjectConfiguration(instanceId: string, projectName: string): Promise<void> {
         try {
             const sandbox = this.getSandbox();
-            const moveTemplateResult = await sandbox.exec(`mv ${templateName} ${instanceId}`);
             
-            if (moveTemplateResult.exitCode === 0) {
-                // Allocate single port for both dev server and tunnel
-                const allocatedPort = await this.allocateAvailablePort();
+            // Update package.json with new project name (top-level only)
+            this.logger.info(`Updating package.json with project name: ${projectName}`);
+            const packageJsonResult = await sandbox.exec(`cd ${instanceId} && sed -i '1,10s/^[ \t]*"name"[ ]*:[ ]*"[^"]*"/  "name": "${projectName}"/' package.json`);
+            
+            if (packageJsonResult.exitCode !== 0) {
+                this.logger.warn('Failed to update package.json', packageJsonResult.stderr);
+            }
+            
+            // Update wrangler.jsonc with new project name (top-level only)
+            this.logger.info(`Updating wrangler.jsonc with project name: ${projectName}`);
+            const wranglerResult = await sandbox.exec(`cd ${instanceId} && sed -i '0,/"name":/s/"name"[ ]*:[ ]*"[^"]*"/"name": "${projectName}"/' wrangler.jsonc`);
+               
+            if (wranglerResult.exitCode !== 0) {
+                this.logger.warn('Failed to update wrangler.jsonc', wranglerResult.stderr);
+            }
+            
+            this.logger.info('Project configuration updated successfully');
+        } catch (error) {
+            this.logger.error(`Error updating project configuration: ${error}`);
+            throw error;
+        }
+    }  
+    
+    // TODO: REMOVE BEFORE PRODUCTION, SECURITY THREAT! Only for testing and demo
+    private async setLocalEnvVars(instanceId: string, localEnvVars: Record<string, string>): Promise<void> {
+        try {
+            const sandbox = this.getSandbox();
+            // Simply save all env vars in '.dev.vars' file
+            const envVarsContent = Object.entries(localEnvVars)
+                .map(([key, value]) => `${key}=${value}`)
+                .join('\n');
+            await sandbox.writeFile(`${instanceId}/.dev.vars`, envVarsContent);
+        } catch (error) {
+            this.logger.error(`Error setting local environment variables: ${error}`);
+            throw error;
+        }
+    }
+
+    private async setupInstance(instanceId: string, projectName: string, localEnvVars?: Record<string, string>): Promise<{previewURL: string, tunnelURL: string, processId: string, allocatedPort: number} | undefined> {
+        try {
+            const sandbox = this.getSandbox();
+            // Update project configuration with the specified project name
+            await this.updateProjectConfiguration(instanceId, projectName);
+            
+            // Allocate single port for both dev server and tunnel
+            const allocatedPort = await this.allocateAvailablePort();
                 
-                // Start cloudflared tunnel using the same port as dev server
-                const tunnelPromise = this.startCloudflaredTunnel(instanceId, allocatedPort);
+            // Start cloudflared tunnel using the same port as dev server
+            const tunnelPromise = this.startCloudflaredTunnel(instanceId, allocatedPort);
                 
-                this.logger.info(`Installing dependencies for ${instanceId}`);
-                const installResult = await this.executeCommand(instanceId, `bun install`);
-                this.logger.info(`Install result: ${installResult.stdout}`);
+            this.logger.info(`Installing dependencies for ${instanceId}`);
+            const installResult = await this.executeCommand(instanceId, `bun install`);
+            this.logger.info(`Install result: ${installResult.stdout}`);
+
+            if (localEnvVars) {
+                await this.setLocalEnvVars(instanceId, localEnvVars);
+            }
                 
-                if (installResult.exitCode === 0) {
-                    // Try to start development server in background
-                    try {
-                        // Start dev server on allocated port
-                        const processId = await this.startDevServer(instanceId, allocatedPort);
+            if (installResult.exitCode === 0) {
+                // Try to start development server in background
+                try {
+                    // Start dev server on allocated port
+                    const processId = await this.startDevServer(instanceId, allocatedPort);
                         
-                        this.logger.info(`Successfully created instance ${instanceId}, processId: ${processId}, port: ${allocatedPort}`);
+                    this.logger.info(`Successfully created instance ${instanceId}, processId: ${processId}, port: ${allocatedPort}`);
                         
-                        // Expose the same port for preview URL
-                        const previewResult = await sandbox.exposePort(allocatedPort, { hostname: this.hostname });
-                        const previewUrl = previewResult.url;
+                    // Expose the same port for preview URL
+                    const previewResult = await sandbox.exposePort(allocatedPort, { hostname: this.hostname });
+                    const previewURL = previewResult.url;
                         
-                        // Wait for tunnel URL (tunnel forwards to same port)
-                        const tunnelUrl = await tunnelPromise;
+                    // Wait for tunnel URL (tunnel forwards to same port)
+                    const tunnelURL = await tunnelPromise;
                         
-                        this.logger.info(`Exposed preview URL: ${previewUrl}, Tunnel URL: ${tunnelUrl}`);
+                    this.logger.info(`Exposed preview URL: ${previewURL}, Tunnel URL: ${tunnelURL}`);
                         
-                        return { previewUrl, tunnelUrl, processId, allocatedPort };
-                    } catch (error) {
-                        this.logger.warn('Failed to start dev server or tunnel', error);
-                        return undefined;
-                    }
-                } else {
-                    // Handle dependency installation failure
-                    const error: RuntimeError = {
-                        timestamp: new Date(),
-                        message: `Failed to install dependencies: ${installResult.stderr}`,
-                        severity: 'warning',
-                        source: 'npm_install',
-                        rawOutput: `Exit code: ${installResult.exitCode}\nSTDOUT: ${installResult.stdout}\nSTDERR: ${installResult.stderr}`
-                    };
-                    await this.storeRuntimeError(instanceId, error);
+                    return { previewURL, tunnelURL, processId, allocatedPort };
+                } catch (error) {
+                    this.logger.warn('Failed to start dev server or tunnel', error);
+                    return undefined;
                 }
+            } else {
+                // Handle dependency installation failure
+                const error: RuntimeError = {
+                    timestamp: new Date(),
+                    message: `Failed to install dependencies: ${installResult.stderr}`,
+                    severity: 'warning',
+                    source: 'npm_install',
+                    rawOutput: `Exit code: ${installResult.exitCode}\nSTDOUT: ${installResult.stdout}\nSTDERR: ${installResult.stderr}`
+                };
+                await this.storeRuntimeError(instanceId, error);
             }
         } catch (error) {
             this.logger.warn('Failed to setup instance', error);
@@ -525,15 +678,29 @@ export class SandboxSdkClient extends BaseSandboxService {
         return undefined;
     }
 
-    async createInstance(templateName: string, projectName: string, webhookUrl?: string, wait?: boolean): Promise<BootstrapResponse> {
+    async createInstance(templateName: string, projectName: string, webhookUrl?: string, wait?: boolean, localEnvVars?: Record<string, string>): Promise<BootstrapResponse> {
         try {
             const instanceId = `${projectName}-${crypto.randomUUID()}`;
             this.logger.info(`Creating sandbox instance: ${instanceId}`, { templateName: templateName, projectName: projectName });
             
-            let results: {previewUrl: string, tunnelUrl: string, processId: string, allocatedPort: number} | undefined;
+            // // Generate JWT bearer token for templates gateway authentication
+            // const jwtToken = await this.generateTemplatesGatewayToken(this.sandboxId, instanceId);
+            
+            // // Register JWT token in KV for authentication
+            // await this.registerAuthToken(jwtToken, instanceId);
+            
+            // // Set authentication environment variables for sandbox
+            // await this.setAuthEnvironmentVariables(jwtToken);
+            
+            let results: {previewURL: string, tunnelURL: string, processId: string, allocatedPort: number} | undefined;
             await this.ensureTemplateExists(templateName);
             
-            const setupPromise = () => this.setupInstance(templateName, instanceId);
+            const moveTemplateResult = await this.getSandbox().exec(`mv ${templateName} ${instanceId}`);
+            if (moveTemplateResult.exitCode !== 0) {
+                throw new Error(`Failed to move template: ${moveTemplateResult.stderr}`);
+            }
+            
+            const setupPromise = () => this.setupInstance(instanceId, projectName, localEnvVars);
             if (wait) {
                 const setupResult = await setupPromise();
                 if (!setupResult) {
@@ -557,9 +724,9 @@ export class SandboxSdkClient extends BaseSandboxService {
                         projectName: projectName,
                         startTime: new Date().toISOString(),
                         webhookUrl: webhookUrl,
-                        previewUrl: result.previewUrl,
+                        previewURL: result.previewURL,
                         processId: result.processId,
-                        tunnelUrl: result.tunnelUrl,
+                        tunnelURL: result.tunnelURL,
                         allocatedPort: result.allocatedPort,
                     };
                     await this.storeInstanceMetadata(instanceId, metadata);
@@ -572,9 +739,9 @@ export class SandboxSdkClient extends BaseSandboxService {
                 projectName: projectName,
                 startTime: new Date().toISOString(),
                 webhookUrl: webhookUrl,
-                previewUrl: results?.previewUrl,
+                previewURL: results?.previewURL,
                 processId: results?.processId,
-                tunnelUrl: results?.tunnelUrl,
+                tunnelURL: results?.tunnelURL,
                 allocatedPort: results?.allocatedPort,
             };
             await this.storeInstanceMetadata(instanceId, metadata);
@@ -583,8 +750,8 @@ export class SandboxSdkClient extends BaseSandboxService {
                 success: true,
                 runId: instanceId,
                 message: `Successfully created instance from template ${templateName}`,
-                previewURL: results?.previewUrl,
-                tunnelURL: results?.tunnelUrl,
+                previewURL: results?.previewURL,
+                tunnelURL: results?.tunnelURL,
                 processId: results?.processId,
             };
         } catch (error) {
@@ -610,35 +777,7 @@ export class SandboxSdkClient extends BaseSandboxService {
             const startTime = new Date(metadata.startTime);
             const uptime = Math.floor((Date.now() - startTime.getTime()) / 1000);
             // Get file tree
-            let fileTree: FileTreeNode | undefined;
-            try {
-                // Skip node_modules, .git, .vscode, .dist, .next, .cache, .idea, .vscode, .gitignore, .gitkeep, .DS_Store
-                const ignorePaths = [
-                    'node_modules',
-                    '.git',
-                    '.vscode',
-                    '.dist',
-                    '.next',
-                    '.cache',
-                    '.idea',
-                    '.vscode',
-                    '.gitignore',
-                    '.gitkeep',
-                    '.DS_Store'
-                ];
-                const filesResult = await this.executeCommand(instanceId, `find . -type f ${ignorePaths.map(path => ` -not -path "*/${path}/*"`).join(' ')}`);
-                if (filesResult.exitCode === 0) {
-                    const files = filesResult.stdout.trim().split('\n')
-                        .filter(path => path.trim())
-                        .map(path => ({
-                            file_path: path,
-                            file_contents: ''
-                        }));
-                    fileTree = this.buildFileTree(files);
-                }
-            } catch (error) {
-                this.logger.warn('Failed to get file tree', error);
-            }
+            const fileTree = await this.buildFileTree(instanceId);
 
             // Get runtime errors
             let runtimeErrors: RuntimeError[] = [];
@@ -658,9 +797,9 @@ export class SandboxSdkClient extends BaseSandboxService {
                 serviceDirectory: instanceId,
                 fileTree,
                 runtimeErrors,
-                previewURL: metadata.previewUrl,
+                previewURL: metadata.previewURL,
                 processId: metadata.processId,
-                tunnelUrl: metadata.tunnelUrl,
+                tunnelURL: metadata.tunnelURL,
             };
 
             return {
@@ -708,8 +847,8 @@ export class SandboxSdkClient extends BaseSandboxService {
                 success: true,
                 pending: false,
                 message: isHealthy ? 'Instance is running normally' : 'Instance may have issues',
-                previewURL: metadata.previewUrl,
-                tunnelURL: metadata.tunnelUrl,
+                previewURL: metadata.previewURL,
+                tunnelURL: metadata.tunnelURL,
                 processId: metadata.processId
             };
         } catch (error) {
@@ -868,25 +1007,46 @@ export class SandboxSdkClient extends BaseSandboxService {
             const files = [];
             const errors = [];
 
-            const readPromises = filePaths.map(filePath => {
-                return sandbox.readFile(`${instanceId}/${filePath}`);
+            const readPromises = filePaths.map(async (filePath) => {
+                try {
+                    const result = await sandbox.readFile(`${instanceId}/${filePath}`);
+                    return {
+                        result,
+                        filePath
+                    };
+                } catch (error) {
+                    return {
+                        result: null,
+                        filePath,
+                        error
+                    };
+                }
             });
-            
-            const readResults = await Promise.all(readPromises);
-            
+        
+            const readResults = await Promise.allSettled(readPromises);
+        
             for (const readResult of readResults) {
-                if (readResult.success) {
-                    files.push({
-                        file_path: readResult.path,
-                        file_contents: donttouchPaths.includes(readResult.path) ? '[REDACTED]' : readResult.content
-                    });
-                    
-                    this.logger.info(`Successfully read file: ${readResult.path}`);
+                if (readResult.status === 'fulfilled') {
+                    const { result, filePath } = readResult.value;
+                    if (result && result.success) {
+                        files.push({
+                            file_path: filePath,
+                            file_contents: donttouchPaths.includes(filePath) ? '[REDACTED]' : result.content
+                        });
+                        
+                        this.logger.info(`Successfully read file: ${filePath}`);
+                    } else {
+                        this.logger.error(`Failed to read file: ${filePath}`);
+                        errors.push({
+                            file: filePath,
+                            error: 'Failed to read file'
+                        });
+                    }
                 } else {
-                    this.logger.error(`Failed to read file: ${readResult.path}`);
+                    this.logger.error(`Promise rejected for file read`);
                     errors.push({
-                        file: readResult.path,
-                        error: 'Unknown error'
+                        file: 'unknown',
+                        error: 'Promise rejected'
                     });
                 }
             }
@@ -1262,45 +1422,28 @@ export class SandboxSdkClient extends BaseSandboxService {
     // DEPLOYMENT
     // ==========================================
 
-    async deployToCloudflareWorkers(instanceId: string, credentials?: DeploymentCredentials): Promise<DeploymentResult> {
+    async deployToCloudflareWorkers(instanceId: string): Promise<DeploymentResult> {
         try {
             
-            // Build the project first
-            try {
-                const buildCmd = `bun run build`;
-                const buildResult = await this.executeCommand(instanceId, buildCmd);
+            // // Build the project first
+            // try {
+            //     const buildCmd = `bun run build`;
+            //     const buildResult = await this.executeCommand(instanceId, buildCmd);
                 
-                if (buildResult.exitCode !== 0) {
-                    throw new Error(`Build failed: ${buildResult.stderr}`);
-                }
-            } catch (error) {
-                this.logger.warn('Build step failed or not available', error);
-            }
+            //     if (buildResult.exitCode !== 0) {
+            //         throw new Error(`Build failed: ${buildResult.stderr}`);
+            //     }
+            // } catch (error) {
+            //     this.logger.warn('Build step failed or not available', error);
+            // }
+
+            const base64Data = await this.packInstance(instanceId, true);
+            return deployToCloudflareWorkers({
+                instanceId,
+                base64encodedArchive: base64Data,
+                logger: this.logger
+            });
             
-            // Deploy using Wrangler
-            const deployCmd = credentials 
-                ? `CLOUDFLARE_API_TOKEN=${credentials.apiToken} CLOUDFLARE_ACCOUNT_ID=${credentials.accountId} npx wrangler deploy`
-                : `npx wrangler deploy`;
-                
-            const deployResult = await this.executeCommand(instanceId, deployCmd);
-            
-            if (deployResult.exitCode === 0) {
-                // Extract deployed URL from output
-                const urlMatch = deployResult.stdout.match(/https:\/\/[^\s]+/);
-                const deployedUrl = urlMatch ? urlMatch[0] : undefined;
-                
-                this.logger.info(`Successfully deployed instance ${instanceId}`, { deployedUrl });
-                
-                return {
-                    success: true,
-                    message: 'Successfully deployed to Cloudflare Workers',
-                    deployedUrl,
-                    deploymentId: `deploy-${instanceId}-${Date.now()}`,
-                    output: deployResult.stdout
-                };
-            } else {
-                throw new Error(`Deployment failed: ${deployResult.stderr}`);
-            }
         } catch (error) {
             this.logger.error('deployToCloudflareWorkers', error, { instanceId });
             return {
@@ -1412,11 +1555,41 @@ export class SandboxSdkClient extends BaseSandboxService {
     // SAVE/RESUME OPERATIONS
     // ==========================================
 
-    async saveInstance(instanceId: string): Promise<SaveInstanceResponse> {
+    async packInstance(instanceId: string, build: boolean = true): Promise<string> {
+        const archiveName = `${instanceId}.zip`;
+        const sandbox = this.getSandbox();
+            
+        if (build) {
+            const buildResult = await this.executeCommand(instanceId, 'bun run build');
+            if (buildResult.exitCode !== 0) {
+                throw new Error(`Build failed: ${buildResult.stderr}`);
+            }
+        }
+
+        // Create zip archive excluding large directories for speed
+        // -0: no compression (fastest)
+        // -r: recursive
+        // -q: quiet (less output overhead)
+        // -x: exclude patterns
+        const zipCmd = `zip -6 -r -q ${archiveName} ${instanceId}/ ${instanceId}-metadata.json ${instanceId}-runtime_errors.json -x "data/*" "*/node_modules/*" "*/.cache/*" "*/.git/*" "*/.vscode/*" "*/coverage/*" "*/.nyc_output/*" "*/tmp/*" "*/temp/*" || true`;
+        const zipResult = await sandbox.exec(zipCmd);
+
+        if (zipResult.exitCode !== 0) {
+            throw new Error(`Failed to create zip archive: ${zipResult.stderr}`);
+        }
+
+        // Convert zip file to base64 for proper binary handling
+        const base64Result = await sandbox.exec(`base64 -w 0 ${archiveName} && rm ${archiveName}`);
+        if (base64Result.exitCode !== 0) {
+            throw new Error('Failed to encode zip file to base64');
+        }
+
+        return base64Result.stdout.trim();
+    }
+
+    async saveInstance(instanceId: string, buildBeforeSave: boolean = true): Promise<SaveInstanceResponse> {
         try {
             this.logger.info(`Saving instance ${instanceId} to R2 bucket`);
-            
-            const sandbox = this.getSandbox();
 
             // Check if instance exists
             const metadata = await this.getInstanceMetadata(instanceId);
@@ -1426,46 +1599,19 @@ export class SandboxSdkClient extends BaseSandboxService {
                     error: `Instance ${instanceId} not found`
                 };
             }
-
             // Create archive name based on instance details
-            const archiveName = `${instanceId}.zip`;
             const compressionStart = Date.now();
-
-            // Create zip archive excluding large directories for speed
-            // -0: no compression (fastest)
-            // -r: recursive
-            // -q: quiet (less output overhead)
-            // -x: exclude patterns
-            const zipCmd = `zip -6 -r -q ${archiveName} ${instanceId}/ ${instanceId}-metadata.json ${instanceId}-runtime_errors.json -x "data/*" "*/node_modules/*" "*/dist/*" "*/.wrangler/*" "*/.next/*" "*/.cache/*" "*/build/*" "*/.git/*" "*/.vscode/*" "*/coverage/*" "*/.nyc_output/*" "*/tmp/*" "*/temp/*" || true`;
-            const zipResult = await sandbox.exec(zipCmd);
-
-            if (zipResult.exitCode !== 0) {
-                throw new Error(`Failed to create zip archive: ${zipResult.stderr}`);
-            }
-
             const compressionTime = Date.now() - compressionStart;
             this.logger.info(`Zipped instance ${instanceId} in ${compressionTime}ms`);
 
             // Upload to R2 bucket using PUT request
             const uploadStart = Date.now();
-            const r2Url = `${env.TEMPLATES_BUCKET_URL}/instances/${archiveName}`;
+            
+            // Decode base64 back to binary for R2 upload
+            const base64Content = await this.packInstance(instanceId, buildBeforeSave);
+            const binaryBuffer = Uint8Array.from(atob(base64Content), c => c.charCodeAt(0));
 
-            // Read the zip file
-            const archiveFile = await sandbox.readFile(archiveName);
-            if (!archiveFile.success) {
-                throw new Error('Failed to read zip archive');
-            }
-
-            // // Upload to R2
-            // const uploadResponse = await fetch(r2Url, {
-            //     method: 'PUT',
-            //     body: archiveFile.content,
-            //     headers: {
-            //         'Content-Type': 'application/zip'
-            //     }
-            // });
-
-            const uploadResponse = await env.TEMPLATES_BUCKET.put(`instances/${archiveName}`, archiveFile.content);
+            const uploadResponse = await env.TEMPLATES_BUCKET.put(`instances/${instanceId}.zip`, binaryBuffer);
 
             if (!uploadResponse) {
                 throw new Error(`Failed to upload to R2`);
@@ -1476,13 +1622,11 @@ export class SandboxSdkClient extends BaseSandboxService {
             // Cleanup local archive
             // await sandbox.exec(`rm -f ${archiveName}`);
 
-            this.logger.info(`Successfully saved instance ${instanceId} to ${r2Url} (compression: ${compressionTime}ms, upload: ${uploadTime}ms), Object: ${uploadResponse}`);
+            this.logger.info(`Successfully saved instance ${instanceId} (compression: ${compressionTime}ms, upload: ${uploadTime}ms), Object: ${uploadResponse}`);
 
             return {
                 success: true,
                 message: `Successfully saved instance ${instanceId}`,
-                savedUrl: r2Url,
-                savedAs: archiveName,
                 compressionTime,
                 uploadTime
             };
@@ -1529,7 +1673,7 @@ export class SandboxSdkClient extends BaseSandboxService {
                                 success: true,
                                 message: `Instance ${instanceId} is already running`,
                                 resumed: false,
-                                previewURL: metadata.previewUrl,
+                                previewURL: metadata.previewURL,
                                 processId: metadata.processId
                             };
                         }
@@ -1550,7 +1694,7 @@ export class SandboxSdkClient extends BaseSandboxService {
                 this.logger.info(`Downloading instance ${instanceId} using ensureTemplateExists`);
                 
                 // Use the existing ensureTemplateExists function which handles zip download and extraction
-                await this.ensureTemplateExists(instanceId, 'instances');
+                await this.ensureTemplateExists(instanceId, "instances", true);
 
                 downloadTime = Date.now() - downloadStart;
                 this.logger.info(`Downloaded and extracted instance ${instanceId} in ${downloadTime}ms`);
@@ -1567,7 +1711,7 @@ export class SandboxSdkClient extends BaseSandboxService {
                 const setupStart = Date.now();
 
                 // Install dependencies and start dev server (reuse existing logic)
-                const setupResult = await this.setupInstance(metadata?.templateName || 'unknown', instanceId);
+                const setupResult = await this.setupInstance(instanceId, metadata?.projectName || instanceId);
                 
                 if (!setupResult) {
                     throw new Error('Failed to setup instance');
@@ -1579,9 +1723,9 @@ export class SandboxSdkClient extends BaseSandboxService {
                     templateName: metadata?.templateName || 'unknown',
                     projectName: metadata?.projectName || instanceId,
                     startTime: new Date().toISOString(),
-                    previewUrl: setupResult.previewUrl,
+                    previewURL: setupResult.previewURL,
                     processId: setupResult.processId,
-                    tunnelUrl: setupResult.tunnelUrl,
+                    tunnelURL: setupResult.tunnelURL,
                     allocatedPort: setupResult.allocatedPort
                 };
 
@@ -1594,7 +1738,8 @@ export class SandboxSdkClient extends BaseSandboxService {
                     success: true,
                     message: `Successfully resumed instance ${instanceId}`,
                     resumed: true,
-                    previewURL: setupResult.previewUrl,
+                    previewURL: setupResult.previewURL,
+                    tunnelURL: setupResult.tunnelURL,
                     processId: setupResult.processId
                 };
             }
@@ -1603,7 +1748,7 @@ export class SandboxSdkClient extends BaseSandboxService {
                 success: true,
                 message: `Instance ${instanceId} was already running`,
                 resumed: false,
-                previewURL: metadata?.previewUrl,
+                previewURL: metadata?.previewURL,
                 processId: metadata?.processId
             };
 
@@ -1716,4 +1861,72 @@ export class SandboxSdkClient extends BaseSandboxService {
                 return 'warning';
         }
     }
+
+    // /**
+    //  * Generate JWT token for templates gateway authentication using existing TokenService
+    //  */
+    // private async generateTemplatesGatewayToken(sessionId: string, instanceId: string): Promise<string> {
+    //     // Create a minimal environment object for TokenService with the gateway JWT secret
+    //     const tokenEnv = {
+    //         JWT_SECRET: env.TEMPLATES_GATEWAY_JWT_SECRET
+    //     };
+        
+    //     const tokenService = new TokenService(tokenEnv as Env);
+        
+    //     // Create JWT token with custom payload for templates gateway
+    //     const token = await tokenService.createToken(
+    //         {
+    //             sub: sessionId, // Use sessionId as subject
+    //             email: `sandbox-${sessionId}@templates.gateway`, // Dummy email for TokenService compatibility
+    //             type: 'access' as const,
+    //             sessionId: sessionId,
+    //             jti: instanceId // Use jti field to store instanceId for validation
+    //         },
+    //         86400 // 24 hours in seconds
+    //     );
+        
+    //     this.logger.info('Generated JWT token for templates gateway authentication');
+    //     return token;
+    // }
+
+    // /**
+    //  * Register JWT token in KV for authentication
+    //  */
+    // private async registerAuthToken(jwtToken: string, instanceId: string): Promise<void> {
+    //     try {
+    //         const kvKey = `agent-orangebuild-${jwtToken}`;
+    //         await env.INSTANCE_REGISTRY?.put(
+    //             kvKey,
+    //             instanceId,
+    //             { expirationTtl: 86400 } // 24 hours TTL
+    //         );
+    //         this.logger.info('Registered JWT token in KV registry', { instanceId });
+    //     } catch (error) {
+    //         this.logger.error('Failed to register JWT token in KV registry', error);
+    //         throw new Error('Failed to register authentication token');
+    //     }
+    // }
+
+    // /**
+    //  * Set authentication environment variables for sandbox
+    //  */
+    // private async setAuthEnvironmentVariables(jwtToken: string): Promise<void> {
+    //     const authEnvVars = {
+    //         CF_AI_API_KEY: jwtToken,
+    //         CF_AI_BASE_URL: env.TEMPLATES_GATEWAY_URL || 'https://templates.coder.eti-india.workers.dev'
+    //     };
+        
+    //     // Merge with existing environment variables
+    //     const combinedEnvVars = { ...this.envVars, ...authEnvVars };
+        
+    //     // Set the combined environment variables on the sandbox
+    //     this.getSandbox().setEnvVars(combinedEnvVars);
+    //     this.logger.info('Set authentication environment variables for sandbox', {
+    //         CF_AI_BASE_URL: authEnvVars.CF_AI_BASE_URL,
+    //         hasApiKey: !!authEnvVars.CF_AI_API_KEY
+    //     });
+        
+    //     // Update the instance's envVars for future use
+    //     this.envVars = combinedEnvVars;
+    // }
 }

@@ -1,8 +1,3 @@
-/**
- * Enhanced Process Monitor with Inlined Patterns and Robust Framework Support
- * Comprehensive monitoring for Vite+React/Next.js development servers
- * Handles both structured and unstructured console output gracefully
- */
 
 import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';

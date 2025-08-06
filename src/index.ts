@@ -9,17 +9,18 @@ import {
   GitHubInitRequest,
   GitHubPushRequest,
   ResumeInstanceRequestSchema
-} from './types';
+} from './sandboxTypes';
 
 // Export the Sandbox class in your Worker
-export { Sandbox } from "@cloudflare/sandbox";
+export { Sandbox as UserAppSandboxService, Sandbox as DeployerService, Sandbox} from "@cloudflare/sandbox";
 
 
-async function getClientForSession(c: any): Promise<SandboxSdkClient> {
+async function getClientForSession(c: any, envVars?: Record<string, string>): Promise<SandboxSdkClient> {
   const sessionId = c.req.header('x-session-id') || 'default-session';
   const hostname = new URL(c.req.raw.url).hostname;
-  
-    const client = new SandboxSdkClient(sessionId, hostname);
+    console.log('Session ID:', sessionId, 'Hostname:', hostname, 'Env Vars:', envVars);
+    
+    const client = new SandboxSdkClient(sessionId, hostname, envVars);
     await client.initialize();
     return client;
 }
@@ -28,7 +29,7 @@ async function getClientForSession(c: any): Promise<SandboxSdkClient> {
 const templateController = {
   async listTemplates(c: any) {
     try {
-      const response = await SandboxSdkClient.listTemplates(c.env.TEMPLATES_BUCKET_URL);
+      const response = await SandboxSdkClient.listTemplates();
       return c.json(response);
     } catch (error) {
       return c.json({ 
@@ -59,7 +60,7 @@ const processController = {
     try {
       const body = await c.req.json();
       const validatedBody = BootstrapRequestSchema.parse(body);
-      const client = await getClientForSession(c);
+      const client = await getClientForSession(c, validatedBody.envVars);
       
       const response = await client.createInstance(
         validatedBody.templateName,
@@ -301,7 +302,7 @@ const deploymentController = {
       const body = await c.req.json();
       const credentials = body.credentials ? DeploymentCredentialsSchema.parse(body.credentials) : undefined;
       const client = await getClientForSession(c);
-      const response = await client.deployToCloudflareWorkers(instanceId, credentials);
+      const response = await client.deployToCloudflareWorkers(instanceId);
       return c.json(response);
     } catch (error) {
       return c.json({ 
@@ -357,6 +358,27 @@ const githubController = {
 
 
 const app = new Hono<{ Bindings: Env }>();
+
+// Auth middleware - simple token-based authentication
+app.use('*', async (c, next) => {
+  const authToken = c.req.header('Authorization')?.replace('Bearer ', '');
+  const expectedToken = c.env.AUTH_TOKEN;
+  
+  if (!expectedToken) {
+    // Skip auth if no token is configured
+    return next();
+  }
+  
+  if (!authToken || authToken !== expectedToken) {
+    return c.json({ 
+      success: false, 
+      error: 'Unauthorized - Invalid or missing auth token' 
+    }, 401);
+  }
+  
+  return next();
+});
+
 // Template routes
 app.get('/templates', templateController.listTemplates);
 app.get('/templates/:name', templateController.getTemplateDetails);

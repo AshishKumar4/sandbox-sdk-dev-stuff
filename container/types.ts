@@ -1,8 +1,3 @@
-/**
- * Streamlined type definitions for the unified process monitoring system
- * Essential types only - removing unused response schemas and over-engineered interfaces
- */
-
 import { z } from 'zod';
 
 // ==========================================

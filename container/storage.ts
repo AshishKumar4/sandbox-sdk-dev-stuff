@@ -1,8 +1,3 @@
-/**
- * Unified Storage System for Process Monitoring
- * Combines error and log storage with shared SQLite connection and transaction management
- * Optimized for Cloudflare Durable Objects container environment
- */
 
 import { Database } from 'bun:sqlite';
 import { createHash } from 'crypto';
