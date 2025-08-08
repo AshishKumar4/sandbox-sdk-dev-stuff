@@ -1,6 +1,7 @@
+
 import { proxyToSandbox } from "@cloudflare/sandbox";
 import { Hono } from 'hono';
-import { SandboxSdkClient } from './sandboxSdkClient';
+import { SandboxSdkClient } from './sandbox/sandboxSdkClient';
 import { 
   BootstrapRequestSchema, 
   WriteFilesRequestSchema, 
@@ -9,7 +10,7 @@ import {
   GitHubInitRequest,
   GitHubPushRequest,
   ResumeInstanceRequestSchema
-} from './sandboxTypes';
+} from './sandbox/sandboxTypes';
 
 // Export the Sandbox class in your Worker
 export { Sandbox as UserAppSandboxService, Sandbox as DeployerService, Sandbox} from "@cloudflare/sandbox";
@@ -17,7 +18,8 @@ export { Sandbox as UserAppSandboxService, Sandbox as DeployerService, Sandbox} 
 
 async function getClientForSession(c: any, envVars?: Record<string, string>): Promise<SandboxSdkClient> {
   const sessionId = c.req.header('x-session-id') || 'default-session';
-  const hostname = new URL(c.req.raw.url).hostname;
+  const url = new URL(c.req.raw.url);
+  const hostname = url.hostname === 'localhost' ? `localhost:${url.port}`: url.hostname;
     console.log('Session ID:', sessionId, 'Hostname:', hostname, 'Env Vars:', envVars);
     
     const client = new SandboxSdkClient(sessionId, hostname, envVars);
@@ -248,6 +250,20 @@ const processController = {
     }
   },
 
+  async fixCodeIssues(c: any) {
+    try {
+      const instanceId = c.req.param('id');
+      const client = await getClientForSession(c);
+      const response = await client.fixCodeIssues(instanceId);
+      return c.json(response);
+    } catch (error) {
+      return c.json({ 
+        success: false, 
+        error: `Failed to fix code issues: ${error instanceof Error ? error.message : 'Unknown error'}` 
+      }, 500);
+    }
+  },
+
   async getLogs(c: any) {
     try {
       const instanceId = c.req.param('id');
@@ -399,6 +415,7 @@ app.get('/instances/:id/analysis', processController.analyzeCode);
 app.get('/instances/:id/logs', processController.getLogs);
 app.post('/instances/:id/save', processController.saveInstance);
 app.post('/instances/:id/resume', processController.resumeInstance);
+app.post('/instances/:id/code-fix', processController.fixCodeIssues);
 
 // Deployment routes
 app.post('/instances/:id/deploy', deploymentController.deployInstance);

@@ -29,14 +29,17 @@ import {
     ResumeInstanceResponse,
 } from './sandboxTypes';
 
-import { createObjectLogger } from './logger';
+import { createObjectLogger } from '../logger';
 import { env } from 'cloudflare:workers'
 import { BaseSandboxService } from './BaseSandboxService';
 
-import { deployToCloudflareWorkers } from './deploymentService';
-
+import { deployToCloudflareWorkers } from '../deploymentService';
+import { TokenService } from '../auth/tokenService';
+import { CodeFixResult, FileFetcher, fixProjectIssues } from '../code-fixer';
+import { FileObject } from '@/code-fixer/types';
 // Export the Sandbox class in your Worker
-export { Sandbox as UserAppSandboxService, Sandbox as DeployerService, Sandbox} from "@cloudflare/sandbox";
+export { Sandbox as UserAppSandboxService, Sandbox as DeployerService} from "@cloudflare/sandbox";
+
 
 interface InstanceMetadata {
     templateName: string;
@@ -62,7 +65,7 @@ export interface StreamEvent {
     timestamp: Date;
 }
   
-const NUM_CONTAINER_POOLS = 10;
+const NUM_CONTAINER_POOLS = 2;
 function getAutoAllocatedSandbox(sessionId: string): string {
     // We have N containers and we can have M sessionIds at once. M >> N
     // So we algorithmically assign sessionId to containerId
@@ -125,7 +128,7 @@ export class SandboxSdkClient extends BaseSandboxService {
 
     private getSandbox(): SandboxType {
         if (!this.sandbox) {
-            this.sandbox = getSandbox(env.SandboxServiceObject, this.sandboxId);
+            this.sandbox = getSandbox(env.Sandbox, this.sandboxId);
         }
         return this.sandbox;
     }
@@ -536,7 +539,9 @@ export class SandboxSdkClient extends BaseSandboxService {
             
             return new Promise<string>((resolve, reject) => {
                 const timeout = setTimeout(() => {
-                    reject(new Error('Timeout waiting for cloudflared tunnel URL'));
+                    // reject(new Error('Timeout waiting for cloudflared tunnel URL'));
+                    this.logger.warn('Timeout waiting for cloudflared tunnel URL');
+                    resolve('');
                 }, 20000); // 20 second timeout
 
                 const processLogs = async () => {
@@ -559,6 +564,7 @@ export class SandboxSdkClient extends BaseSandboxService {
                             }
                         }
                     } catch (error) {
+                        this.logger.error('Cloudflare tunnel process failed', error);
                         clearTimeout(timeout);
                         reject(error);
                     }
@@ -683,14 +689,14 @@ export class SandboxSdkClient extends BaseSandboxService {
             const instanceId = `${projectName}-${crypto.randomUUID()}`;
             this.logger.info(`Creating sandbox instance: ${instanceId}`, { templateName: templateName, projectName: projectName });
             
-            // // Generate JWT bearer token for templates gateway authentication
-            // const jwtToken = await this.generateTemplatesGatewayToken(this.sandboxId, instanceId);
+            // Generate JWT bearer token for templates gateway authentication
+            const jwtToken = await this.generateTemplatesGatewayToken(this.sandboxId, instanceId);
             
-            // // Register JWT token in KV for authentication
-            // await this.registerAuthToken(jwtToken, instanceId);
+            // Register JWT token in KV for authentication
+            await this.registerAuthToken(jwtToken, instanceId);
             
-            // // Set authentication environment variables for sandbox
-            // await this.setAuthEnvironmentVariables(jwtToken);
+            // Set authentication environment variables for sandbox
+            await this.setAuthEnvironmentVariables(jwtToken);
             
             let results: {previewURL: string, tunnelURL: string, processId: string, allocatedPort: number} | undefined;
             await this.ensureTemplateExists(templateName);
@@ -972,7 +978,7 @@ export class SandboxSdkClient extends BaseSandboxService {
         }
     }
 
-    async getFiles(instanceId: string, filePaths?: string[]): Promise<GetFilesResponse> {
+    async getFiles(instanceId: string, filePaths?: string[], applyFilter: boolean = false): Promise<GetFilesResponse> {
         try {
             const sandbox = this.getSandbox();
 
@@ -989,20 +995,25 @@ export class SandboxSdkClient extends BaseSandboxService {
                     };
                 }
                 this.logger.info(`Successfully read important files: ${filePaths}`);
+                applyFilter = true;
             }
 
-            // Read 'donttouch_files.json'
-            const donttouchFiles = await sandbox.exec(`cd ${instanceId} && jq -r '.[]' donttouch_files.json | while read -r path; do if [ -d "$path" ]; then find "$path" -type f; elif [ -f "$path" ]; then echo "$path"; fi; done`);
-            this.logger.info(`Read donttouch files: stdout: ${donttouchFiles.stdout}, stderr: ${donttouchFiles.stderr}`);
-            const donttouchPaths = donttouchFiles.stdout.split('\n').filter(path => path);
-            if (!donttouchPaths) {
-                return {
-                    success: false,
-                    files: [],
-                    error: 'Failed to read donttouch files'
-                };
+            let donttouchPaths: string[] = [];
+
+            if (applyFilter) {
+                // Read 'donttouch_files.json'
+                const donttouchFiles = await sandbox.exec(`cd ${instanceId} && jq -r '.[]' donttouch_files.json | while read -r path; do if [ -d "$path" ]; then find "$path" -type f; elif [ -f "$path" ]; then echo "$path"; fi; done`);
+                this.logger.info(`Read donttouch files: stdout: ${donttouchFiles.stdout}, stderr: ${donttouchFiles.stderr}`);
+                donttouchPaths = donttouchFiles.stdout.split('\n').filter(path => path);
+                if (!donttouchPaths) {
+                    return {
+                        success: false,
+                        files: [],
+                        error: 'Failed to read donttouch files'
+                    };
+                }
+                this.logger.info(`Successfully read donttouch files: ${donttouchPaths}`);
             }
-            this.logger.info(`Successfully read donttouch files: ${donttouchPaths}`);
 
             const files = [];
             const errors = [];
@@ -1031,7 +1042,7 @@ export class SandboxSdkClient extends BaseSandboxService {
                     if (result && result.success) {
                         files.push({
                             file_path: filePath,
-                            file_contents: donttouchPaths.includes(filePath) ? '[REDACTED]' : result.content
+                            file_contents: applyFilter && donttouchPaths.includes(filePath) ? '[REDACTED]' : result.content
                         });
                         
                         this.logger.info(`Successfully read file: ${filePath}`);
@@ -1296,7 +1307,7 @@ export class SandboxSdkClient extends BaseSandboxService {
             // Run ESLint and TypeScript check in parallel
             const [lintResult, tscResult] = await Promise.allSettled([
                 this.executeCommand(instanceId, 'bun run lint'),
-                this.executeCommand(instanceId, 'npx tsc --noEmit --pretty false')
+                this.executeCommand(instanceId, 'bunx tsc -b --incremental --noEmit --pretty false')
             ]);
 
             const results: StaticAnalysisResponse = {
@@ -1322,7 +1333,7 @@ export class SandboxSdkClient extends BaseSandboxService {
             };
             
             // Process ESLint results
-            if (lintResult.status === 'fulfilled' && lintResult.value.stdout) {
+            if (lintResult.status === 'fulfilled') {
                 try {
                     const lintData = JSON.parse(lintResult.value.stdout) as Array<{
                         filePath: string;
@@ -1358,38 +1369,71 @@ export class SandboxSdkClient extends BaseSandboxService {
                     warningCount: lintIssues.filter(issue => issue.severity === 'warning').length,
                     infoCount: lintIssues.filter(issue => issue.severity === 'info').length
                 };
-                results.lint.rawOutput = lintResult.value.stdout;
+                results.lint.rawOutput = `STDOUT: ${lintResult.value.stdout}\nSTDERR: ${lintResult.value.stderr}`;
             } else if (lintResult.status === 'rejected') {
                 this.logger.warn('ESLint analysis failed', lintResult.reason);
             }
             
             // Process TypeScript check results
-            if (tscResult.status === 'fulfilled' && tscResult.value.stderr) {
+            if (tscResult.status === 'fulfilled') {
                 try {
-                    const lines = tscResult.value.stderr.split('\n');
-                    for (const line of lines) {
-                        const match = line.match(/^(.+)\((\d+),(\d+)\): error TS\d+: (.+)$/);
-                        if (match) {
-                            typecheckIssues.push({
-                                message: match[4],
-                                filePath: match[1],
-                                line: parseInt(match[2]),
-                                column: parseInt(match[3]),
-                                severity: 'error',
-                                source: 'typescript'
-                            });
+                    // TypeScript errors can come from either stdout or stderr
+                    const output = tscResult.value.stderr || tscResult.value.stdout;
+                    
+                    if (!output || output.trim() === '') {
+                        this.logger.info('No TypeScript output to parse');
+                    } else {
+                        this.logger.info(`Parsing TypeScript output: ${output.substring(0, 200)}...`);
+                        
+                        // Split by lines and parse each error
+                        const lines = output.split('\n');
+                        let currentError: any = null;
+                        
+                        for (const line of lines) {
+                            // Match TypeScript error format: path(line,col): error TSxxxx: message
+                            const match = line.match(/^(.+?)\((\d+),(\d+)\): error TS(\d+): (.*)$/);
+                            if (match) {
+                                // If we have a previous error being built, add it
+                                if (currentError) {
+                                    typecheckIssues.push(currentError);
+                                }
+                                
+                                // Start building new error
+                                currentError = {
+                                    message: match[5].trim(),
+                                    filePath: match[1].trim(),
+                                    line: parseInt(match[2]),
+                                    column: parseInt(match[3]),
+                                    severity: 'error' as const,
+                                    source: 'typescript',
+                                    ruleId: `TS${match[4]}`
+                                };
+                                
+                                this.logger.info(`Found TypeScript error: ${currentError.filePath}:${currentError.line} - ${currentError.ruleId}`);
+                            } else if (currentError && line.trim() && !line.startsWith('src/') && !line.includes(': error TS')) {
+                                // This might be a continuation of the error message
+                                currentError.message += ' ' + line.trim();
+                            }
                         }
+                        
+                        // Add the last error if it exists
+                        if (currentError) {
+                            typecheckIssues.push(currentError);
+                        }
+                        
+                        this.logger.info(`Parsed ${typecheckIssues.length} TypeScript errors`);
                     }
-                    results.typecheck.issues = typecheckIssues;
-                    results.typecheck.summary = {
-                        errorCount: typecheckIssues.filter(issue => issue.severity === 'error').length,
-                        warningCount: typecheckIssues.filter(issue => issue.severity === 'warning').length,
-                        infoCount: typecheckIssues.filter(issue => issue.severity === 'info').length
-                    };
-                    results.typecheck.rawOutput = tscResult.value.stderr;
                 } catch (error) {
                     this.logger.warn('Failed to parse TypeScript output', error);
                 }
+                
+                results.typecheck.issues = typecheckIssues;
+                results.typecheck.summary = {
+                    errorCount: typecheckIssues.filter(issue => issue.severity === 'error').length,
+                    warningCount: typecheckIssues.filter(issue => issue.severity === 'warning').length,
+                    infoCount: typecheckIssues.filter(issue => issue.severity === 'info').length
+                };
+                results.typecheck.rawOutput = `STDOUT: ${tscResult.value.stdout}\nSTDERR: ${tscResult.value.stderr}`;
             } else if (tscResult.status === 'rejected') {
                 this.logger.warn('TypeScript analysis failed', tscResult.reason);
             }
@@ -1410,6 +1454,62 @@ export class SandboxSdkClient extends BaseSandboxService {
         }
     }
 
+    async fixCodeIssues(instanceId: string, allFiles?: FileObject[]): Promise<CodeFixResult> {
+        try {
+            this.logger.info(`Fixing code issues for ${instanceId}`);
+            // First run static analysis
+            const analysisResult = await this.runStaticAnalysisCode(instanceId);
+            this.logger.info(`Static analysis completed for ${instanceId}`);
+            // Then get all the files
+            const files = allFiles || (await this.getFiles(instanceId)).files;
+            this.logger.info(`Files retrieved for ${instanceId}`);
+            
+            // Create file fetcher callback
+            const fileFetcher: FileFetcher = async (filePath: string) => {
+                // Fetch a single file from the instance
+                try {
+                    const result = await this.getSandbox().readFile(`${instanceId}/${filePath}`);
+                    if (result.success) {
+                        this.logger.info(`Successfully fetched file: ${filePath}`);
+                        return {
+                            file_path: filePath,
+                            file_contents: result.content,
+                            file_purpose: `Fetched file: ${filePath}`
+                        };
+                    } else {
+                        this.logger.debug(`File not found: ${filePath}`);
+                    }
+                } catch (error) {
+                    this.logger.debug(`Failed to fetch file ${filePath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+                }
+                return null;
+            };
+
+            // Use the new functional API
+            const fixResult = await fixProjectIssues(
+                files.map(file => ({
+                    file_path: file.file_path,
+                    file_contents: file.file_contents,
+                    file_purpose: ''
+                })),
+                analysisResult.typecheck.issues,
+                fileFetcher
+            );
+            fixResult.modifiedFiles.forEach((file: FileObject) => {
+                this.getSandbox().writeFile(`${instanceId}/${file.file_path}`, file.file_contents);
+            });
+            this.logger.info(`Code fix completed for ${instanceId}`);
+            return fixResult;
+        } catch (error) {
+            this.logger.error('fixCodeIssues', error, { instanceId });
+            return {
+                fixedIssues: [],
+                unfixableIssues: [],
+                modifiedFiles: []
+            };
+        }
+    }
+
     private mapESLintSeverity(severity: number): LintSeverity {
         switch (severity) {
             case 1: return 'warning';
@@ -1424,24 +1524,13 @@ export class SandboxSdkClient extends BaseSandboxService {
 
     async deployToCloudflareWorkers(instanceId: string): Promise<DeploymentResult> {
         try {
-            
-            // // Build the project first
-            // try {
-            //     const buildCmd = `bun run build`;
-            //     const buildResult = await this.executeCommand(instanceId, buildCmd);
-                
-            //     if (buildResult.exitCode !== 0) {
-            //         throw new Error(`Build failed: ${buildResult.stderr}`);
-            //     }
-            // } catch (error) {
-            //     this.logger.warn('Build step failed or not available', error);
-            // }
-
             const base64Data = await this.packInstance(instanceId, true);
             return deployToCloudflareWorkers({
                 instanceId,
                 base64encodedArchive: base64Data,
-                logger: this.logger
+                logger: this.logger,
+                projectName: this.metadataCache.get(instanceId)?.projectName || '',
+                hostname: this.hostname
             });
             
         } catch (error) {
@@ -1562,6 +1651,7 @@ export class SandboxSdkClient extends BaseSandboxService {
         if (build) {
             const buildResult = await this.executeCommand(instanceId, 'bun run build');
             if (buildResult.exitCode !== 0) {
+                this.logger.warn('Build step failed or not available', buildResult.stdout, buildResult.stderr);
                 throw new Error(`Build failed: ${buildResult.stderr}`);
             }
         }
@@ -1818,7 +1908,7 @@ export class SandboxSdkClient extends BaseSandboxService {
     async exposePort(instanceId: string, port: number): Promise<string> {
         try {
             const sandbox = this.getSandbox();
-            const preview = await sandbox.exposePort(port, { hostname: this.hostname });
+            const preview = await sandbox.exposePort(port, { hostname: this.hostname, name: instanceId });
             this.logger.info(`Exposed port ${port} for instance ${instanceId}`, { url: preview.url });
             return preview.url;
         } catch (error) {
@@ -1862,71 +1952,66 @@ export class SandboxSdkClient extends BaseSandboxService {
         }
     }
 
-    // /**
-    //  * Generate JWT token for templates gateway authentication using existing TokenService
-    //  */
-    // private async generateTemplatesGatewayToken(sessionId: string, instanceId: string): Promise<string> {
-    //     // Create a minimal environment object for TokenService with the gateway JWT secret
-    //     const tokenEnv = {
-    //         JWT_SECRET: env.TEMPLATES_GATEWAY_JWT_SECRET
-    //     };
+    /**
+     * Generate JWT token for templates gateway authentication using existing TokenService
+     */
+    private async generateTemplatesGatewayToken(sessionId: string, instanceId: string): Promise<string> {
+        const tokenService = new TokenService(env);
         
-    //     const tokenService = new TokenService(tokenEnv as Env);
+        // Create JWT token with custom payload for templates gateway
+        const token = await tokenService.createToken(
+            {
+                sub: sessionId, // Use sessionId as subject
+                email: `sandbox-${sessionId}@templates.gateway`, // Dummy email for TokenService compatibility
+                type: 'access' as const,
+                sessionId: sessionId,
+                jti: instanceId // Use jti field to store instanceId for validation
+            },
+            86400 // 24 hours in seconds
+        );
         
-    //     // Create JWT token with custom payload for templates gateway
-    //     const token = await tokenService.createToken(
-    //         {
-    //             sub: sessionId, // Use sessionId as subject
-    //             email: `sandbox-${sessionId}@templates.gateway`, // Dummy email for TokenService compatibility
-    //             type: 'access' as const,
-    //             sessionId: sessionId,
-    //             jti: instanceId // Use jti field to store instanceId for validation
-    //         },
-    //         86400 // 24 hours in seconds
-    //     );
-        
-    //     this.logger.info('Generated JWT token for templates gateway authentication');
-    //     return token;
-    // }
+        this.logger.info('Generated JWT token for templates gateway authentication');
+        return token;
+    }
 
-    // /**
-    //  * Register JWT token in KV for authentication
-    //  */
-    // private async registerAuthToken(jwtToken: string, instanceId: string): Promise<void> {
-    //     try {
-    //         const kvKey = `agent-orangebuild-${jwtToken}`;
-    //         await env.INSTANCE_REGISTRY?.put(
-    //             kvKey,
-    //             instanceId,
-    //             { expirationTtl: 86400 } // 24 hours TTL
-    //         );
-    //         this.logger.info('Registered JWT token in KV registry', { instanceId });
-    //     } catch (error) {
-    //         this.logger.error('Failed to register JWT token in KV registry', error);
-    //         throw new Error('Failed to register authentication token');
-    //     }
-    // }
+    /**
+     * Register JWT token in KV for authentication
+     */
+    private async registerAuthToken(jwtToken: string, instanceId: string): Promise<void> {
+        try {
+            const kvKey = `agent-orangebuild-${jwtToken}`;
+            await env.INSTANCE_REGISTRY.put(
+                kvKey,
+                instanceId,
+                { expirationTtl: 86400 } // 24 hours TTL
+            );
+            this.logger.info('Registered JWT token in KV registry', { instanceId });
+        } catch (error) {
+            this.logger.error('Failed to register JWT token in KV registry', error);
+            throw new Error('Failed to register authentication token');
+        }
+    }
 
-    // /**
-    //  * Set authentication environment variables for sandbox
-    //  */
-    // private async setAuthEnvironmentVariables(jwtToken: string): Promise<void> {
-    //     const authEnvVars = {
-    //         CF_AI_API_KEY: jwtToken,
-    //         CF_AI_BASE_URL: env.TEMPLATES_GATEWAY_URL || 'https://templates.coder.eti-india.workers.dev'
-    //     };
+    /**
+     * Set authentication environment variables for sandbox
+     */
+    private async setAuthEnvironmentVariables(jwtToken: string): Promise<void> {
+        const authEnvVars = {
+            CF_AI_API_KEY: jwtToken,
+            CF_AI_BASE_URL: env.TEMPLATES_GATEWAY_URL || 'https://templates.coder.eti-india.workers.dev'
+        };
         
-    //     // Merge with existing environment variables
-    //     const combinedEnvVars = { ...this.envVars, ...authEnvVars };
+        // Merge with existing environment variables
+        const combinedEnvVars = { ...this.envVars, ...authEnvVars };
         
-    //     // Set the combined environment variables on the sandbox
-    //     this.getSandbox().setEnvVars(combinedEnvVars);
-    //     this.logger.info('Set authentication environment variables for sandbox', {
-    //         CF_AI_BASE_URL: authEnvVars.CF_AI_BASE_URL,
-    //         hasApiKey: !!authEnvVars.CF_AI_API_KEY
-    //     });
+        // Set the combined environment variables on the sandbox
+        this.getSandbox().setEnvVars(combinedEnvVars);
+        this.logger.info('Set authentication environment variables for sandbox', {
+            CF_AI_BASE_URL: authEnvVars.CF_AI_BASE_URL,
+            hasApiKey: !!authEnvVars.CF_AI_API_KEY
+        });
         
-    //     // Update the instance's envVars for future use
-    //     this.envVars = combinedEnvVars;
-    // }
+        // Update the instance's envVars for future use
+        this.envVars = combinedEnvVars;
+    }
 }

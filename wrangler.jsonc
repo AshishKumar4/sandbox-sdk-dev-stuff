@@ -6,12 +6,15 @@
 	// "$schema": "node_modules/wrangler/config-schema.json",
 	"name": "sandboxsdk-dev-worker",
 	"main": "src/index.ts",
-	"compatibility_date": "2025-07-24",
+    "compatibility_flags": [
+      "nodejs_compat"
+    ],
+    "compatibility_date": "2025-08-08",
     "containers": [
       {
-        "class_name": "Sandbox",
+        "class_name": "UserAppSandboxService",
         "image": "./SandboxDockerfile",
-        "max_instances": 1,
+        "max_instances": 2,
         "configuration": {
           "vcpu": 4,
           "memory_mib": 2048,
@@ -38,8 +41,8 @@
     "durable_objects": {
       "bindings": [
         {
-          "class_name": "Sandbox",
-          "name": "SandboxServiceObject"
+            "class_name": "UserAppSandboxService",
+            "name": "Sandbox"
         },
         {
           "class_name": "DeployerService",
@@ -57,13 +60,20 @@
     ],
     "migrations": [
       {
-        "new_sqlite_classes": ["Sandbox"],
-        "tag": "v1"
+        "new_sqlite_classes": ["UserAppSandboxService"],
+        "tag": "v3"
       },
       {
         "new_sqlite_classes": ["DeployerService"],
         "tag": "v2"
       }
+    ],
+    "kv_namespaces": [
+        {
+            "binding": "INSTANCE_REGISTRY",
+            "id": "801cc1d5758e44f1bd0565985d9d6df0",
+            "experimental_remote": true
+        }
     ],
 	"observability": {
 		"enabled": true
@@ -90,7 +100,8 @@
 	 */
 	"vars": { 
 		"TEMPLATES_BUCKET_URL": "https://pub-a087c6e0b61c4f15984726f1f1b40594.r2.dev",
-		// "AUTH_TOKEN": "your-secure-auth-token-here"
+        "TEMPLATES_GATEWAY_URL": "https://templates.coder.eti-india.workers.dev",
+        "JWT_SECRET": "your-secure-auth-token-here"
 	}
 	/**
 	 * Note: Use secrets to store sensitive data.

@@ -36,7 +36,7 @@ import {
     ResumeInstanceResponse
   } from './sandboxTypes';
   
-  import { createObjectLogger, StructuredLogger } from './logger';
+  import { createObjectLogger, StructuredLogger } from '../logger';
   import { env } from 'cloudflare:workers'
   /**
    * Streaming event for enhanced command execution
