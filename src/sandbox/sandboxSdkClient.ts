@@ -1,4 +1,4 @@
-import { getSandbox, Sandbox, parseSSEStream, type ExecEvent, ExecuteResponse, LogEvent } from '@cloudflare/sandbox';
+import { getSandbox, Sandbox, parseSSEStream, type ExecEvent, ExecuteResponse } from '@cloudflare/sandbox';
 
 import {
     TemplateDetailsResponse,
@@ -22,7 +22,7 @@ import {
     LintSeverity,
     TemplateInfo,
     TemplateDetails,
-    GitHubInitRequest, GitHubInitResponse, GitHubPushRequest, GitHubPushResponse,
+    GitHubExportRequest, GitHubExportResponse,
     GetLogsResponse,
     ListInstancesResponse,
     SaveInstanceResponse,
@@ -36,7 +36,12 @@ import { BaseSandboxService } from './BaseSandboxService';
 import { deployToCloudflareWorkers } from '../deploymentService';
 import { TokenService } from '../auth/tokenService';
 import { CodeFixResult, FileFetcher, fixProjectIssues } from '../code-fixer';
-import { FileObject } from '@/code-fixer/types';
+import { FileObject } from '../code-fixer/types';
+import { createGitHubHeaders } from '../utils/authUtils';
+import { generateId } from '../utils/idGenerator';
+import { ResourceProvisioner } from './resourceProvisioner';
+import { TemplateParser } from './templateParser';
+import { ResourceProvisioningResult } from './types';
 // Export the Sandbox class in your Worker
 export { Sandbox as UserAppSandboxService, Sandbox as DeployerService} from "@cloudflare/sandbox";
 
@@ -65,7 +70,7 @@ export interface StreamEvent {
     timestamp: Date;
 }
   
-const NUM_CONTAINER_POOLS = 2;
+const NUM_CONTAINER_POOLS = 200;
 function getAutoAllocatedSandbox(sessionId: string): string {
     // We have N containers and we can have M sessionIds at once. M >> N
     // So we algorithmically assign sessionId to containerId
@@ -143,6 +148,7 @@ export class SandboxSdkClient extends BaseSandboxService {
 
     private async executeCommand(instanceId: string, command: string, timeout?: number): Promise<ExecuteResponse> {
         return await this.getSandbox().exec(`cd ${instanceId} && ${command}`, { timeout });
+        // return await this.getSandbox().exec(command, { cwd: instanceId, timeout });
     }
 
     private async storeRuntimeError(instanceId: string, error: RuntimeError): Promise<void> {
@@ -237,7 +243,6 @@ export class SandboxSdkClient extends BaseSandboxService {
 
     async downloadTemplate(templateName: string, downloadDir?: string) : Promise<ArrayBuffer> {
         // Fetch the zip file from R2
-        let zipData: ArrayBuffer;
         const downloadUrl = downloadDir ? `${downloadDir}/${templateName}.zip` : `${templateName}.zip`;
         this.logger.info(`Fetching object: ${downloadUrl} from R2 bucket`);
         const r2Object = await env.TEMPLATES_BUCKET.get(downloadUrl);
@@ -246,7 +251,7 @@ export class SandboxSdkClient extends BaseSandboxService {
             throw new Error(`Object '${downloadUrl}' not found in bucket`);
         }
     
-        zipData = await r2Object.arrayBuffer();
+        const zipData = await r2Object.arrayBuffer();
     
         this.logger.info(`Downloaded zip file (${zipData.byteLength} bytes)`);
         return zipData;
@@ -257,8 +262,6 @@ export class SandboxSdkClient extends BaseSandboxService {
             // Download and extract template
             this.logger.info(`Template doesnt exist, Downloading template from: ${templateName}`);
             
-            // const downloadCmd = `mkdir -p ${templateName} && wget -q "${templateUrl}" -O "${templateName}.zip" && unzip -o -q "${templateName}.zip" -d ${templateName}`;
-
             const zipData = await this.downloadTemplate(templateName, downloadDir);
 
             const zipBuffer = new Uint8Array(zipData);
@@ -511,6 +514,70 @@ export class SandboxSdkClient extends BaseSandboxService {
         }
     }
 
+    /**
+     * Waits for the development server to be ready by monitoring logs for readiness indicators
+     */
+    private async waitForServerReady(instanceId: string, processId: string, maxWaitTimeMs: number = 10000): Promise<boolean> {
+        const startTime = Date.now();
+        const pollIntervalMs = 500;
+        const maxAttempts = Math.ceil(maxWaitTimeMs / pollIntervalMs);
+        
+        // Patterns that indicate the server is ready
+        const readinessPatterns = [
+            /http:\/\/[^\s]+/,           // Any HTTP URL (most reliable)
+            /ready in \d+/i,             // Vite "ready in X ms"
+            /Local:\s+http/i,            // Vite local server line
+            /Network:\s+http/i,          // Vite network server line
+            /server running/i,           // Generic server running message
+            /listening on/i              // Generic listening message
+        ];
+
+        this.logger.info(`Waiting for dev server to be ready for ${instanceId} (process: ${processId}), max wait: ${maxWaitTimeMs}ms`);
+
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                // Get recent logs only to avoid processing old content
+                const logsResult = await this.getLogs(instanceId, true);
+                
+                if (logsResult.success && logsResult.logs.stdout) {
+                    const logs = logsResult.logs.stdout;
+                    
+                    // Check for any readiness pattern
+                    for (const pattern of readinessPatterns) {
+                        if (pattern.test(logs)) {
+                            const elapsedTime = Date.now() - startTime;
+                            this.logger.info(`Dev server ready for ${instanceId} after ${elapsedTime}ms (attempt ${attempt}/${maxAttempts})`);
+                            
+                            // Log what pattern matched for debugging
+                            const matchedLines = logs.split('\n').filter(line => pattern.test(line));
+                            if (matchedLines.length > 0) {
+                                this.logger.info(`Readiness detected from log line: ${matchedLines[matchedLines.length - 1].trim()}`);
+                            }
+                            
+                            return true;
+                        }
+                    }
+                }
+                
+                // Wait before next attempt (except on last attempt)
+                if (attempt < maxAttempts) {
+                    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+                }
+                
+            } catch (error) {
+                this.logger.warn(`Error checking server readiness for ${instanceId} (attempt ${attempt}):`, error);
+                // Continue trying even if there's an error getting logs
+                if (attempt < maxAttempts) {
+                    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+                }
+            }
+        }
+        
+        const elapsedTime = Date.now() - startTime;
+        this.logger.warn(`Dev server readiness timeout for ${instanceId} after ${elapsedTime}ms (${maxAttempts} attempts)`);
+        return false;
+    }
+
     private async startDevServer(instanceId: string, port: number): Promise<string> {
         try {
             // Use CLI tools for enhanced monitoring instead of direct process start
@@ -518,7 +585,21 @@ export class SandboxSdkClient extends BaseSandboxService {
                 `monitor-cli process start --instance-id ${instanceId} --port ${port} -- bun run dev`, 
                 { cwd: instanceId }
             );
-            this.logger.info(`Started dev server with enhanced monitoring for ${instanceId}`);
+            this.logger.info(`Started dev server process for ${instanceId} (process: ${process.id})`);
+            
+            // Wait for the server to be ready (non-blocking - always returns the process ID)
+            try {
+                const isReady = await this.waitForServerReady(instanceId, process.id, 10000);
+                if (isReady) {
+                    this.logger.info(`Dev server is ready and accepting connections for ${instanceId}`);
+                } else {
+                    this.logger.warn(`Dev server may not be fully ready yet for ${instanceId}, but process is running`);
+                }
+            } catch (readinessError) {
+                this.logger.warn(`Error during readiness check for ${instanceId}:`, readinessError);
+                this.logger.info(`Continuing with dev server startup for ${instanceId} despite readiness check error`);
+            }
+            
             return process.id;
         } catch (error) {
             this.logger.warn('Failed to start dev server', error);
@@ -526,58 +607,190 @@ export class SandboxSdkClient extends BaseSandboxService {
         }
     }
 
-    private async startCloudflaredTunnel(instanceId: string, port: number): Promise<string> {
-        try {
-            const process = await this.getSandbox().startProcess(
-                `cloudflared tunnel --url http://localhost:${port}`, 
-                { cwd: instanceId }
-            );
-            this.logger.info(`Started cloudflared tunnel for ${instanceId}`);
+    // private async startCloudflaredTunnel(instanceId: string, port: number): Promise<string> {
+    //     try {
+    //         const process = await this.getSandbox().startProcess(
+    //             `cloudflared tunnel --url http://localhost:${port}`, 
+    //             { cwd: instanceId }
+    //         );
+    //         this.logger.info(`Started cloudflared tunnel for ${instanceId}`);
 
-            // Stream process logs to extract the preview URL
-            const logStream = await this.getSandbox().streamProcessLogs(process.id);
+    //         // Stream process logs to extract the preview URL
+    //         const logStream = await this.getSandbox().streamProcessLogs(process.id);
             
-            return new Promise<string>((resolve, reject) => {
-                const timeout = setTimeout(() => {
-                    // reject(new Error('Timeout waiting for cloudflared tunnel URL'));
-                    this.logger.warn('Timeout waiting for cloudflared tunnel URL');
-                    resolve('');
-                }, 20000); // 20 second timeout
+    //         return new Promise<string>((resolve, _reject) => {
+    //             const timeout = setTimeout(() => {
+    //                 // reject(new Error('Timeout waiting for cloudflared tunnel URL'));
+    //                 this.logger.warn('Timeout waiting for cloudflared tunnel URL');
+    //                 resolve('');
+    //             }, 20000); // 20 second timeout
 
-                const processLogs = async () => {
-                    try {
-                        for await (const event of parseSSEStream<LogEvent>(logStream)) {
-                            if (event.data) {
-                                const logLine = event.data;
-                                this.logger.info(`Cloudflared log ===> ${logLine}`);
+    //             const processLogs = async () => {
+    //                 try {
+    //                     for await (const event of parseSSEStream<LogEvent>(logStream)) {
+    //                         if (event.data) {
+    //                             const logLine = event.data;
+    //                             this.logger.info(`Cloudflared log ===> ${logLine}`);
                                 
-                                // Look for the preview URL in the logs
-                                // Format: https://subdomain.trycloudflare.com
-                                const urlMatch = logLine.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
-                                if (urlMatch) {
-                                    clearTimeout(timeout);
-                                    const previewURL = urlMatch[0];
-                                    this.logger.info(`Found cloudflared tunnel URL: ${previewURL}`);
-                                    resolve(previewURL);
-                                    return;
-                                }
-                            }
-                        }
-                    } catch (error) {
-                        this.logger.error('Cloudflare tunnel process failed', error);
-                        clearTimeout(timeout);
-                        reject(error);
-                    }
-                };
+    //                             // Look for the preview URL in the logs
+    //                             // Format: https://subdomain.trycloudflare.com
+    //                             const urlMatch = logLine.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+    //                             if (urlMatch) {
+    //                                 clearTimeout(timeout);
+    //                                 const previewURL = urlMatch[0];
+    //                                 this.logger.info(`Found cloudflared tunnel URL: ${previewURL}`);
+    //                                 resolve(previewURL);
+    //                                 return;
+    //                             }
+    //                         }
+    //                     }
+    //                 } catch (error) {
+    //                     this.logger.error('Cloudflare tunnel process failed', error);
+    //                     clearTimeout(timeout);
+    //                     // reject(error);
+    //                     resolve('');
+    //                 }
+    //             };
 
-                processLogs();
-            });
+    //             processLogs();
+    //         });
+    //     } catch (error) {
+    //         this.logger.warn('Failed to start cloudflared tunnel', error);
+    //         throw error;
+    //     }
+    // }
+
+
+    /**
+     * Provisions Cloudflare resources for template placeholders in wrangler.jsonc
+     */
+    private async provisionTemplateResources(instanceId: string, projectName: string): Promise<ResourceProvisioningResult> {
+        try {
+            const sandbox = this.getSandbox();
+            
+            // Read wrangler.jsonc file
+            const wranglerFile = await sandbox.readFile(`${instanceId}/wrangler.jsonc`);
+            if (!wranglerFile.success) {
+                this.logger.info(`No wrangler.jsonc found for ${instanceId}, skipping resource provisioning`);
+                return {
+                    success: true,
+                    provisioned: [],
+                    failed: [],
+                    replacements: {},
+                    wranglerUpdated: false
+                };
+            }
+
+            // Parse and detect placeholders
+            const templateParser = new TemplateParser(this.logger);
+            const parseResult = templateParser.parseWranglerConfig(wranglerFile.content);
+
+            if (!parseResult.hasPlaceholders) {
+                this.logger.info(`No placeholders found in wrangler.jsonc for ${instanceId}`);
+                return {
+                    success: true,
+                    provisioned: [],
+                    failed: [],
+                    replacements: {},
+                    wranglerUpdated: false
+                };
+            }
+
+            this.logger.info(`Found ${parseResult.placeholders.length} placeholders to provision for ${instanceId}`);
+
+            // Initialize resource provisioner (skip if credentials are not available)
+            let resourceProvisioner: ResourceProvisioner;
+            try {
+                resourceProvisioner = new ResourceProvisioner(this.logger);
+            } catch (error) {
+                this.logger.warn(`Cannot initialize resource provisioner: ${error instanceof Error ? error.message : 'Unknown error'}`);
+                return {
+                    success: true,
+                    provisioned: [],
+                    failed: parseResult.placeholders.map(p => ({
+                        placeholder: p.placeholder,
+                        resourceType: p.resourceType,
+                        error: 'Missing Cloudflare credentials',
+                        binding: p.binding
+                    })),
+                    replacements: {},
+                    wranglerUpdated: false
+                };
+            }
+            
+            const provisioned: ResourceProvisioningResult['provisioned'] = [];
+            const failed: ResourceProvisioningResult['failed'] = [];
+            const replacements: Record<string, string> = {};
+
+            // Provision each resource
+            for (const placeholderInfo of parseResult.placeholders) {
+                this.logger.info(`Provisioning ${placeholderInfo.resourceType} resource for placeholder ${placeholderInfo.placeholder}`);
+                
+                const provisionResult = await resourceProvisioner.provisionResource(
+                    placeholderInfo.resourceType,
+                    projectName
+                );
+
+                if (provisionResult.success && provisionResult.resourceId) {
+                    provisioned.push({
+                        placeholder: placeholderInfo.placeholder,
+                        resourceType: placeholderInfo.resourceType,
+                        resourceId: provisionResult.resourceId,
+                        binding: placeholderInfo.binding
+                    });
+                    replacements[placeholderInfo.placeholder] = provisionResult.resourceId;
+                } else {
+                    failed.push({
+                        placeholder: placeholderInfo.placeholder,
+                        resourceType: placeholderInfo.resourceType,
+                        error: provisionResult.error || 'Unknown error',
+                        binding: placeholderInfo.binding
+                    });
+                    this.logger.warn(`Failed to provision ${placeholderInfo.resourceType} for ${placeholderInfo.placeholder}: ${provisionResult.error}`);
+                }
+            }
+
+            // Update wrangler.jsonc if we have replacements
+            let wranglerUpdated = false;
+            if (Object.keys(replacements).length > 0) {
+                const updatedContent = templateParser.replacePlaceholders(wranglerFile.content, replacements);
+                const writeResult = await sandbox.writeFile(`${instanceId}/wrangler.jsonc`, updatedContent);
+                
+                if (writeResult.success) {
+                    wranglerUpdated = true;
+                    this.logger.info(`Updated wrangler.jsonc with ${Object.keys(replacements).length} resource IDs for ${instanceId}`);
+                    this.logger.info(templateParser.createReplacementSummary(replacements));
+                } else {
+                    this.logger.error(`Failed to update wrangler.jsonc for ${instanceId}`);
+                }
+            }
+
+            const result: ResourceProvisioningResult = {
+                success: failed.length === 0,
+                provisioned,
+                failed,
+                replacements,
+                wranglerUpdated
+            };
+
+            if (failed.length > 0) {
+                this.logger.warn(`Resource provisioning completed with ${failed.length} failures for ${instanceId}`);
+            } else {
+                this.logger.info(`Resource provisioning completed successfully for ${instanceId}`);
+            }
+
+            return result;
         } catch (error) {
-            this.logger.warn('Failed to start cloudflared tunnel', error);
-            throw error;
+            this.logger.error(`Exception during resource provisioning for ${instanceId}:`, error);
+            return {
+                success: false,
+                provisioned: [],
+                failed: [],
+                replacements: {},
+                wranglerUpdated: false
+            };
         }
     }
-
 
     /**
      * Updates project configuration files with the specified project name
@@ -630,26 +843,34 @@ export class SandboxSdkClient extends BaseSandboxService {
             // Update project configuration with the specified project name
             await this.updateProjectConfiguration(instanceId, projectName);
             
+            // Provision Cloudflare resources if template has placeholders
+            const resourceProvisioningResult = await this.provisionTemplateResources(instanceId, projectName);
+            if (!resourceProvisioningResult.success && resourceProvisioningResult.failed.length > 0) {
+                this.logger.warn(`Some resources failed to provision for ${instanceId}, but continuing setup process`);
+            }
+            
             // Allocate single port for both dev server and tunnel
             const allocatedPort = await this.allocateAvailablePort();
                 
             // Start cloudflared tunnel using the same port as dev server
-            const tunnelPromise = this.startCloudflaredTunnel(instanceId, allocatedPort);
+            // const tunnelPromise = this.startCloudflaredTunnel(instanceId, allocatedPort);
                 
             this.logger.info(`Installing dependencies for ${instanceId}`);
             const installResult = await this.executeCommand(instanceId, `bun install`);
             this.logger.info(`Install result: ${installResult.stdout}`);
-
-            if (localEnvVars) {
-                await this.setLocalEnvVars(instanceId, localEnvVars);
-            }
                 
             if (installResult.exitCode === 0) {
                 // Try to start development server in background
                 try {
+                    // Set local environment variables if provided
+                    if (localEnvVars) {
+                        await this.setLocalEnvVars(instanceId, localEnvVars);
+                    }
+                    // this.logger.info(`Running setup script for ${instanceId}`);
+                    // const setupResult = await this.executeCommand(instanceId, `[ -f setup.sh ] && bash setup.sh ${projectName}`);
+                    // this.logger.info(`Setup result: STDOUT: ${setupResult.stdout}, STDERR: ${setupResult.stderr}`);
                     // Start dev server on allocated port
                     const processId = await this.startDevServer(instanceId, allocatedPort);
-                        
                     this.logger.info(`Successfully created instance ${instanceId}, processId: ${processId}, port: ${allocatedPort}`);
                         
                     // Expose the same port for preview URL
@@ -657,25 +878,17 @@ export class SandboxSdkClient extends BaseSandboxService {
                     const previewURL = previewResult.url;
                         
                     // Wait for tunnel URL (tunnel forwards to same port)
-                    const tunnelURL = await tunnelPromise;
+                    // const tunnelURL = await tunnelPromise;
                         
-                    this.logger.info(`Exposed preview URL: ${previewURL}, Tunnel URL: ${tunnelURL}`);
+                    this.logger.info(`Exposed preview URL: ${previewURL}`); //, Tunnel URL: ${tunnelURL}`);
                         
-                    return { previewURL, tunnelURL, processId, allocatedPort };
+                    return { previewURL, tunnelURL: '', processId, allocatedPort };
                 } catch (error) {
                     this.logger.warn('Failed to start dev server or tunnel', error);
                     return undefined;
                 }
             } else {
-                // Handle dependency installation failure
-                const error: RuntimeError = {
-                    timestamp: new Date(),
-                    message: `Failed to install dependencies: ${installResult.stderr}`,
-                    severity: 'warning',
-                    source: 'npm_install',
-                    rawOutput: `Exit code: ${installResult.exitCode}\nSTDOUT: ${installResult.stdout}\nSTDERR: ${installResult.stderr}`
-                };
-                await this.storeRuntimeError(instanceId, error);
+                this.logger.warn('Failed to install dependencies', installResult.stderr);
             }
         } catch (error) {
             this.logger.warn('Failed to setup instance', error);
@@ -686,7 +899,7 @@ export class SandboxSdkClient extends BaseSandboxService {
 
     async createInstance(templateName: string, projectName: string, webhookUrl?: string, wait?: boolean, localEnvVars?: Record<string, string>): Promise<BootstrapResponse> {
         try {
-            const instanceId = `${projectName}-${crypto.randomUUID()}`;
+            const instanceId = `${projectName}-${generateId()}`;
             this.logger.info(`Creating sandbox instance: ${instanceId}`, { templateName: templateName, projectName: projectName });
             
             // Generate JWT bearer token for templates gateway authentication
@@ -938,7 +1151,7 @@ export class SandboxSdkClient extends BaseSandboxService {
             const results = [];
 
             const writePromises = files.map(file => {
-                return sandbox.writeFile(`${instanceId}/${file.file_path}`, file.file_contents);
+                return sandbox.writeFile(`${instanceId}/${file.filePath}`, file.fileContents);
             });
             
             const writeResults = await Promise.all(writePromises);
@@ -972,7 +1185,7 @@ export class SandboxSdkClient extends BaseSandboxService {
             this.logger.error('writeFiles', error, { instanceId });
             return {
                 success: false,
-                results: files.map(f => ({ file: f.file_path, success: false, error: 'Instance error' })),
+                results: files.map(f => ({ file: f.filePath, success: false, error: 'Instance error' })),
                 error: `Failed to write files: ${error instanceof Error ? error.message : 'Unknown error'}`
             };
         }
@@ -1041,8 +1254,8 @@ export class SandboxSdkClient extends BaseSandboxService {
                     const { result, filePath } = readResult.value;
                     if (result && result.success) {
                         files.push({
-                            file_path: filePath,
-                            file_contents: applyFilter && donttouchPaths.includes(filePath) ? '[REDACTED]' : result.content
+                            filePath: filePath,
+                            fileContents: applyFilter && donttouchPaths.includes(filePath) ? '[REDACTED]' : result.content
                         });
                         
                         this.logger.info(`Successfully read file: ${filePath}`);
@@ -1076,7 +1289,6 @@ export class SandboxSdkClient extends BaseSandboxService {
             };
         }
     }
-
     // ==========================================
     // LOG RETRIEVAL
     // ==========================================
@@ -1454,6 +1666,7 @@ export class SandboxSdkClient extends BaseSandboxService {
         }
     }
 
+    // This is here just for testing/dev purposes
     async fixCodeIssues(instanceId: string, allFiles?: FileObject[]): Promise<CodeFixResult> {
         try {
             this.logger.info(`Fixing code issues for ${instanceId}`);
@@ -1472,9 +1685,9 @@ export class SandboxSdkClient extends BaseSandboxService {
                     if (result.success) {
                         this.logger.info(`Successfully fetched file: ${filePath}`);
                         return {
-                            file_path: filePath,
-                            file_contents: result.content,
-                            file_purpose: `Fetched file: ${filePath}`
+                            filePath: filePath,
+                            fileContents: result.content,
+                            filePurpose: `Fetched file: ${filePath}`
                         };
                     } else {
                         this.logger.debug(`File not found: ${filePath}`);
@@ -1488,15 +1701,15 @@ export class SandboxSdkClient extends BaseSandboxService {
             // Use the new functional API
             const fixResult = await fixProjectIssues(
                 files.map(file => ({
-                    file_path: file.file_path,
-                    file_contents: file.file_contents,
-                    file_purpose: ''
+                    filePath: file.filePath,
+                    fileContents: file.fileContents,
+                    filePurpose: ''
                 })),
                 analysisResult.typecheck.issues,
                 fileFetcher
             );
             fixResult.modifiedFiles.forEach((file: FileObject) => {
-                this.getSandbox().writeFile(`${instanceId}/${file.file_path}`, file.file_contents);
+                this.getSandbox().writeFile(`${instanceId}/${file.filePath}`, file.fileContents);
             });
             this.logger.info(`Code fix completed for ${instanceId}`);
             return fixResult;
@@ -1529,7 +1742,7 @@ export class SandboxSdkClient extends BaseSandboxService {
                 instanceId,
                 base64encodedArchive: base64Data,
                 logger: this.logger,
-                projectName: this.metadataCache.get(instanceId)?.projectName || '',
+                projectName: (await this.getInstanceMetadata(instanceId))?.projectName || '',
                 hostname: this.hostname
             });
             
@@ -1547,23 +1760,98 @@ export class SandboxSdkClient extends BaseSandboxService {
     // GITHUB INTEGRATION
     // ==========================================
 
-    async initGitHubRepository(instanceId: string, request: GitHubInitRequest): Promise<GitHubInitResponse> {
-        try {
+    // Helper function to transform repository names according to GitHub's rules
+    private transformGitHubRepoName(repoName: string): string {
+        // GitHub allows only [A-Za-z0-9_.-] and transforms all other characters to dashes
+        return repoName.replace(/[^A-Za-z0-9_.-]/g, '-');
+    }
 
-            // Initialize git repository
-            const initResult = await this.executeCommand(instanceId, `git init && git add . && git commit -m "Initial commit"`);
+    async exportToGitHub(instanceId: string, request: GitHubExportRequest): Promise<GitHubExportResponse> {
+        try {
+            // Transform repository name according to GitHub's naming rules
+            const actualRepoName = this.transformGitHubRepoName(request.repositoryName);
+            this.logger.info(`Repository name transformation: "${request.repositoryName}" -> "${actualRepoName}"`);
             
-            if (initResult.exitCode !== 0) {
-                throw new Error(`Git initialization failed: ${initResult.stderr}`);
+            // Step 1: Check if git repository is already initialized
+            const gitStatusCheck = await this.executeCommand(instanceId, `git status`);
+            const isGitRepo = gitStatusCheck.exitCode === 0;
+            
+            // Step 2: Initialize git repository if needed
+            if (!isGitRepo) {
+                this.logger.info(`Initializing new git repository for instance ${instanceId}`);
+                const initResult = await this.executeCommand(instanceId, `git init`);
+                if (initResult.exitCode !== 0) {
+                    throw new Error(`Git init failed: ${initResult.stderr}`);
+                }
+            } else {
+                this.logger.info(`Git repository already exists for instance ${instanceId}`);
             }
             
-            // Create GitHub repository using GitHub API
+            // Step 3: Configure git user (always do this to ensure proper config)
+            const gitConfigResult = await this.executeCommand(instanceId, `git config user.email "${request.email}" && git config user.name "${request.username}"`);
+            if (gitConfigResult.exitCode !== 0) {
+                throw new Error(`Git config failed: ${gitConfigResult.stderr}`);
+            }
+            
+            // Step 4: Check if there are any files to add and commit
+            const gitStatusResult = await this.executeCommand(instanceId, `git status --porcelain`);
+            const hasUncommittedChanges = gitStatusResult.stdout.trim().length > 0;
+            
+            let commitSha = '';
+            const commitMessage = request.commitMessage || "Initial commit";
+            
+            if (hasUncommittedChanges) {
+                // Add and commit changes using the provided or default commit message
+                const addResult = await this.executeCommand(instanceId, `git add .`);
+                if (addResult.exitCode !== 0) {
+                    throw new Error(`Git add failed: ${addResult.stderr}`);
+                }
+                
+                const commitResult = await this.executeCommand(instanceId, `git commit -m "${commitMessage.replace(/"/g, '\\"')}"`);
+                if (commitResult.exitCode !== 0) {
+                    throw new Error(`Git commit failed: ${commitResult.stderr}`);
+                }
+                
+                // Extract commit hash from the commit result
+                const hashResult = await this.executeCommand(instanceId, `git rev-parse HEAD`);
+                if (hashResult.exitCode === 0) {
+                    commitSha = hashResult.stdout.trim();
+                }
+                
+                this.logger.info(`Created commit ${commitSha} for instance ${instanceId}`);
+            } else {
+                // Check if we have any commits at all
+                const logCheck = await this.executeCommand(instanceId, `git log --oneline -1`);
+                if (logCheck.exitCode !== 0) {
+                    // No commits exist, create an empty initial commit
+                    const emptyCommitResult = await this.executeCommand(instanceId, `git commit --allow-empty -m "${commitMessage.replace(/"/g, '\\"')}"`);
+                    if (emptyCommitResult.exitCode !== 0) {
+                        throw new Error(`Git empty commit failed: ${emptyCommitResult.stderr}`);
+                    }
+                    
+                    // Extract commit hash
+                    const hashResult = await this.executeCommand(instanceId, `git rev-parse HEAD`);
+                    if (hashResult.exitCode === 0) {
+                        commitSha = hashResult.stdout.trim();
+                    }
+                    
+                    this.logger.info(`Created empty commit ${commitSha} for instance ${instanceId}`);
+                } else {
+                    // Repository already has commits, get the current commit hash
+                    const hashResult = await this.executeCommand(instanceId, `git rev-parse HEAD`);
+                    if (hashResult.exitCode === 0) {
+                        commitSha = hashResult.stdout.trim();
+                    }
+                    this.logger.info(`Repository already has commits, current commit: ${commitSha} for instance ${instanceId}`);
+                }
+            }
+            
+            // Step 5: Create or get GitHub repository using GitHub API
+            let repoData: { html_url: string; clone_url: string };
+            
             const repoResponse = await fetch('https://api.github.com/user/repos', {
                 method: 'POST',
-                headers: {
-                    'Authorization': `token ${request.token}`,
-                    'Content-Type': 'application/json'
-                },
+                headers: createGitHubHeaders(request.token),
                 body: JSON.stringify({
                     name: request.repositoryName,
                     description: request.description,
@@ -1571,74 +1859,100 @@ export class SandboxSdkClient extends BaseSandboxService {
                 })
             });
             
-            if (!repoResponse.ok) {
+            if (repoResponse.ok) {
+                // Repository was created successfully
+                repoData = await repoResponse.json() as {
+                    html_url: string;
+                    clone_url: string;
+                };
+                this.logger.info(`Created new GitHub repository: ${repoData.html_url}`);
+            } else if (repoResponse.status === 422) {
+                // Repository already exists - fetch existing repository information
+                // Use the transformed repository name for the API path
+                const getRepoResponse = await fetch(`https://api.github.com/repos/${request.username}/${actualRepoName}`, {
+                    method: 'GET',
+                    headers: createGitHubHeaders(request.token)
+                });
+                
+                if (!getRepoResponse.ok) {
+                    const error = await getRepoResponse.text();
+                    throw new Error(`Failed to fetch existing repository: ${error}`);
+                }
+                
+                repoData = await getRepoResponse.json() as {
+                    html_url: string;
+                    clone_url: string;
+                };
+                this.logger.info(`Using existing GitHub repository: ${repoData.html_url}`);
+            } else {
+                // Other error occurred
                 const error = await repoResponse.text();
                 throw new Error(`GitHub API error: ${error}`);
             }
             
-            const repoData = await repoResponse.json() as {
-                html_url: string;
-                clone_url: string;
-            };
+            // Step 6: Check if remote origin already exists
+            const remoteCheckResult = await this.executeCommand(instanceId, `git remote get-url origin`);
+            const remoteExists = remoteCheckResult.exitCode === 0;
             
-            // Configure git with token authentication and add remote
-            const gitConfigResult = await this.executeCommand(instanceId, `git config user.email "${request.email}" && git config user.name "${request.username}" && git remote add origin https://${request.token}@github.com/${request.username}/${request.repositoryName}.git`);
+            // Use the clone_url from GitHub API and inject the token for authentication
+            const remoteUrl = repoData.clone_url.replace('https://', `https://${request.token}@`);
             
-            if (gitConfigResult.exitCode !== 0) {
-                throw new Error(`Git config failed: ${gitConfigResult.stderr}`);
+            if (!remoteExists) {
+                // Add remote origin - quote the URL to handle any special characters
+                const remoteAddResult = await this.executeCommand(instanceId, `git remote add origin "${remoteUrl}"`);
+                if (remoteAddResult.exitCode !== 0) {
+                    throw new Error(`Git remote add failed: ${remoteAddResult.stderr}`);
+                }
+                this.logger.info(`Added remote origin for instance ${instanceId}`);
+            } else {
+                // Update existing remote to use the new URL with token - quote the URL
+                const remoteSetResult = await this.executeCommand(instanceId, `git remote set-url origin "${remoteUrl}"`);
+                if (remoteSetResult.exitCode !== 0) {
+                    throw new Error(`Git remote set-url failed: ${remoteSetResult.stderr}`);
+                }
+                this.logger.info(`Updated remote origin URL for instance ${instanceId}`);
             }
             
-            // Push with authentication
-            const pushResult = await this.executeCommand(instanceId, `git push -u origin main`);
+            // Step 7: Determine current branch and push
+            const branchResult = await this.executeCommand(instanceId, `git branch --show-current`);
+            const currentBranch = branchResult.stdout.trim() || 'main';
             
+            // Ensure we're on main branch (GitHub's default)
+            if (currentBranch !== 'main') {
+                const checkoutResult = await this.executeCommand(instanceId, `git checkout -b main`);
+                if (checkoutResult.exitCode !== 0) {
+                    // If checkout fails, try to rename current branch to main
+                    const renameResult = await this.executeCommand(instanceId, `git branch -m ${currentBranch} main`);
+                    if (renameResult.exitCode !== 0) {
+                        this.logger.warn(`Could not rename branch to main, pushing to ${currentBranch} instead`);
+                    }
+                }
+            }
+            
+            // Step 8: Push to GitHub
+            const finalBranchResult = await this.executeCommand(instanceId, `git branch --show-current`);
+            const pushBranch = finalBranchResult.stdout.trim() || 'main';
+            
+            const pushResult = await this.executeCommand(instanceId, `git push -u origin ${pushBranch}`);
             if (pushResult.exitCode !== 0) {
                 throw new Error(`Git push failed: ${pushResult.stderr}`);
             }
             
-            this.logger.info(`Successfully initialized GitHub repository: ${repoData.html_url}`);
+            this.logger.info(`Successfully exported to GitHub repository: ${repoData.html_url}`);
             
             return {
                 success: true,
                 repositoryUrl: repoData.html_url,
-                cloneUrl: repoData.clone_url
+                cloneUrl: repoData.clone_url,
+                commitSha: commitSha
             };
         } catch (error) {
-            this.logger.error('initGitHubRepository', error, { instanceId });
-            throw new Error(`GitHub repository initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            this.logger.error('exportToGitHub', error, { instanceId });
+            throw new Error(`GitHub export failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
     }
 
-    async pushToGitHub(instanceId: string, request: GitHubPushRequest): Promise<GitHubPushResponse> {
-        try {
 
-            // Add, commit, and push changes with proper error handling
-            const addResult = await this.executeCommand(instanceId, `git add .`);
-            if (addResult.exitCode !== 0) {
-                throw new Error(`Git add failed: ${addResult.stderr}`);
-            }
-            
-            const commitResult = await this.executeCommand(instanceId, `git commit -m "${request.commitMessage.replace(/"/g, '\\"')}"`);
-            if (commitResult.exitCode !== 0) {
-                throw new Error(`Git commit failed: ${commitResult.stderr}`);
-            }
-            
-            const pushResult = await this.executeCommand(instanceId, `git push`);
-            
-            if (pushResult.exitCode !== 0) {
-                throw new Error(`Git push failed: ${pushResult.stderr}`);
-            }
-            
-            this.logger.info(`Successfully pushed to GitHub for instance ${instanceId}`);
-            
-            return {
-                success: true,
-                commitSha: 'unknown' // Would need to parse from git output
-            };
-        } catch (error) {
-            this.logger.error('pushToGitHub', error, { instanceId });
-            throw new Error(`GitHub push failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-        }
-    }
 
     // ==========================================
     // SAVE/RESUME OPERATIONS
@@ -1998,7 +2312,7 @@ export class SandboxSdkClient extends BaseSandboxService {
     private async setAuthEnvironmentVariables(jwtToken: string): Promise<void> {
         const authEnvVars = {
             CF_AI_API_KEY: jwtToken,
-            CF_AI_BASE_URL: env.TEMPLATES_GATEWAY_URL || 'https://templates.coder.eti-india.workers.dev'
+            CF_AI_BASE_URL: env.AI_GATEWAY_PROXY_FOR_TEMPLATES_URL || 'https://templates.coder.eti-india.workers.dev'
         };
         
         // Merge with existing environment variables

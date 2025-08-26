@@ -7,8 +7,7 @@ import {
   WriteFilesRequestSchema, 
   ExecuteCommandsRequestSchema,
   DeploymentCredentialsSchema,
-  GitHubInitRequest,
-  GitHubPushRequest,
+  GitHubExportRequest,
   ResumeInstanceRequestSchema
 } from './sandbox/sandboxTypes';
 
@@ -339,34 +338,18 @@ const deploymentController = {
 
 // GitHub controllers
 const githubController = {
-  async initGitHubRepo(c: any) {
+  async exportToGitHub(c: any) {
     try {
       const instanceId = c.req.param('id');
       const body = await c.req.json();
-      const validatedBody = body as GitHubInitRequest;
+      const validatedBody = body as GitHubExportRequest;
       const client = await getClientForSession(c);
-      const response = await client.initGitHubRepository(instanceId, validatedBody);
+      const response = await client.exportToGitHub(instanceId, validatedBody);
       return c.json(response);
     } catch (error) {
       return c.json({ 
         success: false, 
-        error: `Failed to init GitHub repo: ${error instanceof Error ? error.message : 'Unknown error'}` 
-      }, 500);
-    }
-  },
-
-  async pushToGitHubRepo(c: any) {
-    try {
-      const instanceId = c.req.param('id');
-      const body = await c.req.json();
-      const validatedBody = body as GitHubPushRequest;
-      const client = await getClientForSession(c);
-      const response = await client.pushToGitHub(instanceId, validatedBody);
-      return c.json(response);
-    } catch (error) {
-      return c.json({ 
-        success: false, 
-        error: `Failed to push to GitHub: ${error instanceof Error ? error.message : 'Unknown error'}` 
+        error: `Failed to export to GitHub: ${error instanceof Error ? error.message : 'Unknown error'}` 
       }, 500);
     }
   }
@@ -422,8 +405,7 @@ app.post('/instances/:id/deploy', deploymentController.deployInstance);
 app.get('/instances/:id/deploy', deploymentController.getInstanceDeploymentInfo);
 
 // GitHub integration routes
-app.post('/instances/:id/github/init', githubController.initGitHubRepo);
-app.post('/instances/:id/github/push', githubController.pushToGitHubRepo);
+app.post('/instances/:id/github/export', githubController.exportToGitHub);
 
 export default {
   async fetch(request: Request, env: Env) {

@@ -26,14 +26,12 @@ import {
     DeploymentResult,
     BootstrapResponse,
     
-    GitHubInitRequest, 
-    GitHubInitResponse, 
-    GitHubPushRequest, 
-    GitHubPushResponse, 
     GetLogsResponse,
     ListInstancesResponse,
     SaveInstanceResponse,
-    ResumeInstanceResponse
+    ResumeInstanceResponse,
+    GitHubExportRequest,
+    GitHubExportResponse
   } from './sandboxTypes';
   
   import { createObjectLogger, StructuredLogger } from '../logger';
@@ -226,12 +224,7 @@ import {
     /**
      * Initialize a GitHub repository for an instance
      */
-    abstract initGitHubRepository(instanceId: string, request: GitHubInitRequest): Promise<GitHubInitResponse>;
-  
-    /**
-     * Push files to GitHub repository for an instance
-     */
-    abstract pushToGitHub(instanceId: string, request: GitHubPushRequest): Promise<GitHubPushResponse>;
+    abstract exportToGitHub(instanceId: string, request: GitHubExportRequest): Promise<GitHubExportResponse>
 
     // ==========================================
     // SAVE/RESUME OPERATIONS (Required)

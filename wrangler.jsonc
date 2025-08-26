@@ -14,13 +14,12 @@
       {
         "class_name": "UserAppSandboxService",
         "image": "./SandboxDockerfile",
-        "max_instances": 2,
-        "configuration": {
+        "max_instances": 5,
+        // "instance_type": "standard",
+        "instance_type": {
           "vcpu": 4,
           "memory_mib": 2048,
-          "disk": {
-            "size": "20GB"
-          }
+          "disk_mb": 4000
         },
         "rollout_step_percentage": 100
       },
@@ -28,12 +27,11 @@
         "class_name": "DeployerService",
         "image": "./DeployerDockerfile",
         "max_instances": 1,
-        "configuration": {
+        // "instance_type": "standard",
+        "instance_type": {
           "vcpu": 4,
           "memory_mib": 2048,
-          "disk": {
-            "size": "20GB"
-          }
+          "disk_mb": 4000
         },
         "rollout_step_percentage": 100
       }

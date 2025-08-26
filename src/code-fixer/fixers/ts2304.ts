@@ -4,7 +4,7 @@
  */
 
 import * as t from '@babel/types';
-import { CodeIssue } from '../../sandbox/sandboxTypes';
+import type { CodeIssue } from '../../sandbox/sandboxTypes';
 import { FixerContext, FixResult, FixedIssue, UnfixableIssue, FileObject } from '../types';
 import { generateCode, parseCode } from '../utils/ast';
 import { getFileContent } from '../utils/imports';
@@ -83,8 +83,8 @@ export async function fixUndefinedName(
             const generatedCode = generateCode(updatedAST);
 
             modifiedFiles.push({
-                file_path: issue.filePath,
-                file_contents: generatedCode.code,
+                filePath: issue.filePath,
+                fileContents: generatedCode.code,
             });
 
             fixedIssues.push({

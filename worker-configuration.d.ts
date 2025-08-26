@@ -13,6 +13,7 @@ declare namespace Cloudflare {
 		Sandbox: DurableObjectNamespace<import("./src/index").UserAppSandboxService>;
 		DeployerServiceObject: DurableObjectNamespace<import("./src/index").DeployerService>;
 		TEMPLATES_BUCKET: R2Bucket;
+		AI_GATEWAY_PROXY_FOR_TEMPLATES_URL: string;
 	}
 }
 interface Env extends Cloudflare.Env {}

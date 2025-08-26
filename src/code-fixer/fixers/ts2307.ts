@@ -102,9 +102,9 @@ export async function fixModuleNotFound(
                 logger.info(`Generated updated code (${generatedCode.code.length} characters)`);
                 
                 modifiedFiles.push({
-                    file_path: issue.filePath,
-                    file_contents: generatedCode.code,
-                    file_purpose: `Fixed import path in ${issue.filePath}`,
+                    filePath: issue.filePath,
+                    fileContents: generatedCode.code,
+                    filePurpose: `Fixed import path in ${issue.filePath}`,
                 });
                 
                 fixedIssues.push({
@@ -133,9 +133,9 @@ export async function fixModuleNotFound(
                 logger.info(`Generated stub content (${stubContent.length} characters)`);
                 
                 newFiles.push({
-                    file_path: targetFilePath,
-                    file_contents: stubContent,
-                    file_purpose: `Generated stub file for ${moduleSpecifier}`,
+                    filePath: targetFilePath,
+                    fileContents: stubContent,
+                    filePurpose: `Generated stub file for ${moduleSpecifier}`,
                 });
                 
                 fixedIssues.push({

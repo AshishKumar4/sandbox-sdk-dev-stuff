@@ -290,15 +290,15 @@ export async function getFileContent(
             fetchedFiles.add(filePath); // Mark as attempted
             const result = await fileFetcher(filePath);
             
-            if (result && isScriptFile(result.file_path)) {
+            if (result && isScriptFile(result.filePath)) {
                 logger.info(`ImportUtils: Successfully fetched ${filePath}, storing in files map`);
                 // Store the fetched file in the mutable files map
                 files.set(filePath, {
                     filePath: filePath,
-                    content: result.file_contents,
+                    content: result.fileContents,
                     ast: undefined
                 });
-                return result.file_contents;
+                return result.fileContents;
             } else {
                 logger.info(`ImportUtils: File ${filePath} was fetched but is not a script file or result is null`);
             }

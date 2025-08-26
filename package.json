@@ -17,7 +17,7 @@
 	},
 	"devDependencies": {
 		"typescript": "^5.5.2",
-		"wrangler": "^4.28.1"
+		"wrangler": "^4.32.0"
 	},
 	"dependencies": {
 		"@babel/generator": "^7.26.2",
@@ -29,6 +29,7 @@
 		"@vitejs/plugin-react": "^4.7.0",
 		"hono": "^4.8.9",
 		"jose": "^6.0.12",
+		"jsonc-parser": "^3.3.1",
 		"vite": "^7.0.6"
 	}
 }

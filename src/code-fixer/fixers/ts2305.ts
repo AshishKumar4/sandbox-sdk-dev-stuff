@@ -116,8 +116,8 @@ export async function fixMissingExportedMember(
             const generatedCode = generateCode(modifiedTargetAST);
             
             modifiedFiles.push({
-                file_path: targetFilePath,
-                file_contents: generatedCode.code,
+                filePath: targetFilePath,
+                fileContents: generatedCode.code,
             });
             
             fixedIssues.push({

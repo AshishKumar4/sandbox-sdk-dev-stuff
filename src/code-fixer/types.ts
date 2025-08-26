@@ -11,8 +11,8 @@ import { CodeIssue } from '../sandbox/sandboxTypes';
 // ============================================================================
 
 export interface FileObject {
-    file_path: string;
-    file_contents: string;
+    filePath: string;
+    fileContents: string;
 }
 
 /**

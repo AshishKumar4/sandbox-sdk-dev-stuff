@@ -124,8 +124,8 @@ export async function fixModuleIsNotModule(
                 logger.info(`Generated updated code (${generatedCode.code.length} characters)`);
                 
                 modifiedFiles.push({
-                    file_path: issue.filePath,
-                    file_contents: generatedCode.code,
+                    filePath: issue.filePath,
+                    fileContents: generatedCode.code,
                 });
                 
                 fixedIssues.push({
