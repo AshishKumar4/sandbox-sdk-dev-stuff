@@ -8,7 +8,8 @@ import {
   ExecuteCommandsRequestSchema,
   DeploymentCredentialsSchema,
   GitHubExportRequest,
-  ResumeInstanceRequestSchema
+  ResumeInstanceRequestSchema,
+  GitHubPushRequest
 } from './sandbox/sandboxTypes';
 
 // Export the Sandbox class in your Worker
@@ -141,9 +142,10 @@ const processController = {
     try {
       const instanceId = c.req.param('id');
       const body = await c.req.json();
+      console.log("Body", body);
       const validatedBody = WriteFilesRequestSchema.parse(body);
       const client = await getClientForSession(c);
-      const response = await client.writeFiles(instanceId, validatedBody.files);
+      const response = await client.writeFiles(instanceId, validatedBody.files, validatedBody.commitMessage);
       return c.json(response);
     } catch (error) {
       return c.json({ 
@@ -352,9 +354,23 @@ const githubController = {
         error: `Failed to export to GitHub: ${error instanceof Error ? error.message : 'Unknown error'}` 
       }, 500);
     }
+  },
+  async pushToGitHub(c: any) {
+    try {
+      const instanceId = c.req.param('id');
+      const body = await c.req.json();
+      const validatedBody = body as GitHubPushRequest;
+      const client = await getClientForSession(c);
+      const response = await client.pushToGitHub(instanceId, validatedBody);
+      return c.json(response);
+    } catch (error) {
+      return c.json({ 
+        success: false, 
+        error: `Failed to push to GitHub: ${error instanceof Error ? error.message : 'Unknown error'}` 
+      }, 500);
+    }
   }
 };
-
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -406,6 +422,7 @@ app.get('/instances/:id/deploy', deploymentController.getInstanceDeploymentInfo)
 
 // GitHub integration routes
 app.post('/instances/:id/github/export', githubController.exportToGitHub);
+app.post('/instances/:id/github/push', githubController.pushToGitHub);
 
 export default {
   async fetch(request: Request, env: Env) {

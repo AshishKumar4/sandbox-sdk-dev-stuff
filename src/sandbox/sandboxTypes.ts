@@ -132,13 +132,17 @@ export const BootstrapRequestSchema = z.object({
 })
 export type BootstrapRequest = z.infer<typeof BootstrapRequestSchema>
 
-export const BootstrapResponseSchema = z.object({
-    success: z.boolean(),
+export const PreviewSchema = z.object({
     runId: z.string().optional(),
-    message: z.string().optional(),
     previewURL: z.string().optional(),
     tunnelURL: z.string().optional(),
+})
+export type PreviewType = z.infer<typeof PreviewSchema>
+
+export const BootstrapResponseSchema = PreviewSchema.extend({
+    success: z.boolean(),
     processId: z.string().optional(),
+    message: z.string().optional(),
     error: z.string().optional(),
 })
 export type BootstrapResponse = z.infer<typeof BootstrapResponseSchema>
@@ -177,7 +181,8 @@ export const WriteFilesRequestSchema = z.object({
     files: z.array(z.object({
         filePath: z.string(),
         fileContents: z.string(),
-    })),
+    })), 
+    commitMessage: z.string().optional(),
 })
 export type WriteFilesRequest = z.infer<typeof WriteFilesRequestSchema>
 
@@ -471,14 +476,26 @@ export type RunnerServiceWebhookPayload = z.infer<typeof RunnerServiceWebhookPay
  * GitHub integration types for exporting generated applications
  */
 
-export interface GitHubExportRequest {
+// Common fields for GitHub operations
+interface GitHubUserInfo {
     token: string;
-    repositoryName: string;
-    description?: string;
-    isPrivate: boolean;
     email: string;
     username: string;
-    commitMessage?: string; // Optional commit message for changes
+    isPrivate: boolean;
+}
+
+// Request for creating repository and pushing files (high-level export)
+export interface GitHubExportRequest extends GitHubUserInfo {
+    repositoryName: string;
+    description?: string;
+    cloneUrl?: string; // Optional - if provided, skips repository creation
+    repositoryHtmlUrl?: string; // Optional - if provided, skips repository creation
+}
+
+// Request for pushing to existing repository (low-level push)
+export interface GitHubPushRequest extends GitHubUserInfo {
+    cloneUrl: string;
+    repositoryHtmlUrl: string;
 }
 
 export const GitHubExportResponseSchema = z.object({
@@ -489,6 +506,18 @@ export const GitHubExportResponseSchema = z.object({
     error: z.string().optional(),
 })
 export type GitHubExportResponse = z.infer<typeof GitHubExportResponseSchema>
+
+export const GitHubPushResponseSchema = z.object({
+    success: z.boolean(),
+    commitSha: z.string().optional(),
+    error: z.string().optional(),
+    details: z.object({
+        operation: z.string().optional(),
+        exitCode: z.number().optional(),
+        stderr: z.string().optional(),
+    }).optional(),
+})
+export type GitHubPushResponse = z.infer<typeof GitHubPushResponseSchema>
 
 
 // --- Save/Resume Instance Types ---

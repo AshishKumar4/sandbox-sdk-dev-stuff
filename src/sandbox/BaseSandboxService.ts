@@ -30,6 +30,8 @@ import {
     ListInstancesResponse,
     SaveInstanceResponse,
     ResumeInstanceResponse,
+    GitHubPushRequest,
+    GitHubPushResponse,
     GitHubExportRequest,
     GitHubExportResponse
   } from './sandboxTypes';
@@ -127,7 +129,7 @@ import {
      * Create a new instance from a template
      * Returns: { success: boolean, instanceId?: string, error?: string }
      */
-    abstract createInstance(templateName: string, projectName: string, webhookUrl?: string, wait?: boolean): Promise<BootstrapResponse>;
+    abstract createInstance(templateName: string, projectName: string, webhookUrl?: string, wait?: boolean, localEnvVars?: Record<string, string>): Promise<BootstrapResponse>;
 
     /**
      * List all instances across all sessions
@@ -161,7 +163,7 @@ import {
      * Write multiple files to an instance
      * Returns: { success: boolean, message?: string, results: [...], error?: string }
      */
-    abstract writeFiles(instanceId: string, files: WriteFilesRequest['files']): Promise<WriteFilesResponse>;
+    abstract writeFiles(instanceId: string, files: WriteFilesRequest['files'], commitMessage?: string): Promise<WriteFilesResponse>;
   
     /**
      * Read specific files from an instance
@@ -222,9 +224,14 @@ import {
     // ==========================================
   
     /**
-     * Initialize a GitHub repository for an instance
+     * Export generated app to GitHub (creates repository if needed, then pushes files)
      */
     abstract exportToGitHub(instanceId: string, request: GitHubExportRequest): Promise<GitHubExportResponse>
+
+    /**
+     * Push instance files to existing GitHub repository
+     */
+    abstract pushToGitHub(instanceId: string, request: GitHubPushRequest): Promise<GitHubPushResponse>
 
     // ==========================================
     // SAVE/RESUME OPERATIONS (Required)

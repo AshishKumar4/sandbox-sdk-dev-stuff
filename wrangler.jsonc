@@ -68,8 +68,8 @@
     ],
     "kv_namespaces": [
         {
-            "binding": "INSTANCE_REGISTRY",
-            "id": "801cc1d5758e44f1bd0565985d9d6df0",
+            "binding": "VibecoderStore",
+            "id": "4ef0645e51904cce9d2807ddb631c75b",
             "experimental_remote": true
         }
     ],
@@ -99,7 +99,10 @@
 	"vars": { 
 		"TEMPLATES_BUCKET_URL": "https://pub-a087c6e0b61c4f15984726f1f1b40594.r2.dev",
         "TEMPLATES_GATEWAY_URL": "https://templates.coder.eti-india.workers.dev",
-        "JWT_SECRET": "your-secure-auth-token-here"
+        "JWT_SECRET": "your-secure-auth-token-here",
+        "MAX_SANDBOX_INSTANCES": "10",
+        "ALLOCATION_STRATEGY":"many_to_one",
+        "DISPATCH_NAMESPACE": "orange-build-default-namespace"
 	}
 	/**
 	 * Note: Use secrets to store sensitive data.
