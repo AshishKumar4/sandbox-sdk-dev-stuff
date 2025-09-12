@@ -68,7 +68,6 @@ const processController = {
         validatedBody.templateName,
         validatedBody.projectName,
         validatedBody.webhookUrl,
-        validatedBody.wait
       );
       
       return c.json(response);

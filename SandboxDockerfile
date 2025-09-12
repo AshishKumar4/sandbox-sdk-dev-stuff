@@ -43,9 +43,6 @@ ENV CONTAINER_ENV=docker
 # Reset workdir
 WORKDIR /app
 
-# Download the nextjs template and set it up to provide a cache
-RUN
-
 EXPOSE 3000 
 
 CMD ["bun", "index.ts"]

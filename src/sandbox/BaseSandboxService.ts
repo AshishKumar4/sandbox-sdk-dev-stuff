@@ -22,7 +22,6 @@ import {
     StaticAnalysisResponse,
     
     // Deployment types
-    DeploymentCredentials,
     DeploymentResult,
     BootstrapResponse,
     
@@ -129,7 +128,7 @@ import {
      * Create a new instance from a template
      * Returns: { success: boolean, instanceId?: string, error?: string }
      */
-    abstract createInstance(templateName: string, projectName: string, webhookUrl?: string, wait?: boolean, localEnvVars?: Record<string, string>): Promise<BootstrapResponse>;
+    abstract createInstance(templateName: string, projectName: string, webhookUrl?: string, localEnvVars?: Record<string, string>): Promise<BootstrapResponse>;
 
     /**
      * List all instances across all sessions
@@ -217,7 +216,7 @@ import {
      * Deploy instance to Cloudflare Workers
      * Returns: { success: boolean, message: string, deployedUrl?: string, deploymentId?: string, error?: string }
      */
-    abstract deployToCloudflareWorkers(instanceId: string, credentials?: DeploymentCredentials): Promise<DeploymentResult>;
+    abstract deployToCloudflareWorkers(instanceId: string): Promise<DeploymentResult>;
   
     // ==========================================
     // GITHUB INTEGRATION (Required)

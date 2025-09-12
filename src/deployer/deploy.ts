@@ -6,10 +6,10 @@ import {
 	WranglerConfig,
 } from './types';
 import {
-	parseJsonc,
 	validateConfig,
 	buildWorkerBindings,
 } from './utils/index';
+import { parse } from 'jsonc-parser';
 
 /**
  * Pure deployment configuration builder
@@ -43,7 +43,7 @@ export function buildDeploymentConfig(
  * Pure function to parse wrangler configuration from content string
  */
 export function parseWranglerConfig(configContent: string): WranglerConfig {
-	const config = parseJsonc(configContent) as WranglerConfig;
+	const config = parse(configContent) as WranglerConfig;
 	validateConfig(config);
 	return config;
 }

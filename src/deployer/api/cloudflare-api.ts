@@ -143,10 +143,6 @@ export class CloudflareAPI {
 		// The exported_handlers in metadata is sufficient for the API
 		const finalWorkerContent = workerContent;
 
-		console.log(
-			'\n📋 Sending metadata:',
-			JSON.stringify(metadataWithExports, null, 2),
-		);
 		formData.append('metadata', JSON.stringify(metadataWithExports));
 
 		// Add main worker script as ES module with DO exports
