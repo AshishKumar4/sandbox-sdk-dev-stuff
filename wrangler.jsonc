@@ -36,7 +36,7 @@
       {
         "binding": "TEMPLATES_BUCKET",
         "bucket_name": "orange-build-templates",
-        "experimental_remote": true
+        "remote": true
         // "preview_bucket_name": "orange-build-template-dev"
       }
     ],
@@ -50,7 +50,7 @@
         {
             "binding": "VibecoderStore",
             "id": "4ef0645e51904cce9d2807ddb631c75b",
-            "experimental_remote": true
+            "remote": true
         }
     ],
 	"observability": {
