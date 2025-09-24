@@ -103,23 +103,6 @@ export async function createAssetManifest(
 }
 
 /**
- * Convert Buffer to ArrayBuffer (for Node.js compatibility)
- */
-export function bufferToArrayBuffer(buffer: Buffer): ArrayBuffer {
-	return buffer.buffer.slice(
-		buffer.byteOffset,
-		buffer.byteOffset + buffer.byteLength,
-	);
-}
-
-/**
- * Convert ArrayBuffer to Buffer (for Node.js compatibility)
- */
-export function arrayBufferToBuffer(arrayBuffer: ArrayBuffer): Buffer {
-	return Buffer.from(arrayBuffer);
-}
-
-/**
  * Merge migration configurations
  */
 export function mergeMigrations(migrations: any[] | undefined): any | null {

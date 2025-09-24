@@ -14,7 +14,7 @@
       {
         "class_name": "UserAppSandboxService",
         "image": "./SandboxDockerfile",
-        "max_instances": 5,
+        "max_instances": 20,
         // "instance_type": "standard",
         "instance_type": {
           "vcpu": 4,
@@ -59,6 +59,13 @@
 	"dev": {
 		"container_engine": "unix:///Users/ashishsingh/.docker/run/docker.sock"
 	},
+    "dispatch_namespaces": [
+        {
+            "binding": "DISPATCHER",
+            "namespace": "orange-build-default-namespace",
+            "remote": true
+        }
+    ],
 	/**
 	 * Smart Placement
 	 * Docs: https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
@@ -76,12 +83,24 @@
 	 * Environment Variables
 	 * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
 	 */
+	"routes": [
+        {
+            "pattern": "vibecoder.cloudflare.dev",
+            "custom_domain": true
+        },
+        {
+            "pattern": "*vibecoder.cloudflare.dev/*",
+            "custom_domain": false
+        }
+    ],
 	"vars": { 
 		"TEMPLATES_BUCKET_URL": "https://pub-a087c6e0b61c4f15984726f1f1b40594.r2.dev",
         "TEMPLATES_GATEWAY_URL": "https://templates.coder.eti-india.workers.dev",
         "JWT_SECRET": "your-secure-auth-token-here",
-        "MAX_SANDBOX_INSTANCES": "10",
+        "MAX_SANDBOX_INSTANCES": "20",
         "ALLOCATION_STRATEGY":"many_to_one",
+        "CUSTOM_PREVIEW_DOMAIN":"",
+        "CUSTOM_DOMAIN": "vibecoder.cloudflare.dev",
         "DISPATCH_NAMESPACE": "orange-build-default-namespace"
 	}
 	/**

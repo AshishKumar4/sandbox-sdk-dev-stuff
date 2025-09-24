@@ -8,9 +8,10 @@ import {
   ExecuteCommandsRequestSchema,
   DeploymentCredentialsSchema,
   GitHubExportRequest,
-  ResumeInstanceRequestSchema,
   GitHubPushRequest
 } from './sandbox/sandboxTypes';
+import { createLogger } from "./logger";
+import { getPreviewDomain } from "./utils/urls";
 
 // Export the Sandbox class in your Worker
 export { Sandbox as UserAppSandboxService, Sandbox as DeployerService, Sandbox} from "@cloudflare/sandbox";
@@ -22,7 +23,7 @@ async function getClientForSession(c: any, envVars?: Record<string, string>): Pr
   const hostname = url.hostname === 'localhost' ? `localhost:${url.port}`: url.hostname;
     console.log('Session ID:', sessionId, 'Hostname:', hostname, 'Env Vars:', envVars);
     
-    const client = new SandboxSdkClient(sessionId, hostname, envVars);
+    const client = new SandboxSdkClient(sessionId);
     await client.initialize();
     return client;
 }
@@ -277,37 +278,6 @@ const processController = {
       }, 500);
     }
   },
-
-  async saveInstance(c: any) {
-    try {
-      const instanceId = c.req.param('id');
-      const client = await getClientForSession(c);
-      const response = await client.saveInstance(instanceId);
-      return c.json(response);
-    } catch (error) {
-      return c.json({ 
-        success: false, 
-        error: `Failed to save instance: ${error instanceof Error ? error.message : 'Unknown error'}` 
-      }, 500);
-    }
-  },
-
-  async resumeInstance(c: any) {
-    try {
-      const instanceId = c.req.param('id');
-      const body = await c.req.json();
-      const validatedBody = ResumeInstanceRequestSchema.parse(body);
-      const client = await getClientForSession(c);
-      const response = await client.resumeInstance(instanceId, validatedBody.forceRestart);
-      return c.json(response);
-    } catch (error) {
-      return c.json({ 
-        success: false, 
-        resumed: false,
-        error: `Failed to resume instance: ${error instanceof Error ? error.message : 'Unknown error'}` 
-      }, 500);
-    }
-  },
 };
 
 // Deployment controllers
@@ -411,8 +381,6 @@ app.get('/instances/:id/errors', processController.detectErrors);
 app.delete('/instances/:id/errors', processController.clearErrors);
 app.get('/instances/:id/analysis', processController.analyzeCode);
 app.get('/instances/:id/logs', processController.getLogs);
-app.post('/instances/:id/save', processController.saveInstance);
-app.post('/instances/:id/resume', processController.resumeInstance);
 app.post('/instances/:id/code-fix', processController.fixCodeIssues);
 
 // Deployment routes
@@ -423,14 +391,92 @@ app.get('/instances/:id/deploy', deploymentController.getInstanceDeploymentInfo)
 app.post('/instances/:id/github/export', githubController.exportToGitHub);
 app.post('/instances/:id/github/push', githubController.pushToGitHub);
 
-export default {
-  async fetch(request: Request, env: Env) {
-    const proxyResponse = await proxyToSandbox(request, env);
-    if (proxyResponse) {
-      console.log("Proxy response", proxyResponse);
-      return proxyResponse;
-    }
-    console.log("Proxy response not found");
-    return app.fetch(request, env);
-  },
-};
+// Logger for the main application and handlers
+const logger = createLogger('App');
+
+/**
+ * Handles requests for user-deployed applications on subdomains.
+ * It first attempts to proxy to a live development sandbox. If that fails,
+ * it dispatches the request to a permanently deployed worker via namespaces.
+ * This function will NOT fall back to the main worker.
+ *
+ * @param request The incoming Request object.
+ * @param env The environment bindings.
+ * @returns A Response object from the sandbox, the dispatched worker, or an error.
+ */
+async function handleUserAppRequest(request: Request, env: Env): Promise<Response> {
+	const url = new URL(request.url);
+	const { hostname } = url;
+	logger.info(`Handling user app request for: ${hostname}`);
+
+	// 1. Attempt to proxy to a live development sandbox.
+	// proxyToSandbox doesn't consume the request body on a miss, so no clone is needed here.
+	const sandboxResponse = await proxyToSandbox(request, env);
+	if (sandboxResponse) {
+		logger.info(`Serving response from sandbox for: ${hostname}`);
+		return sandboxResponse;
+	}
+
+	// 2. If sandbox misses, attempt to dispatch to a deployed worker.
+	logger.info(`Sandbox miss for ${hostname}, attempting dispatch to permanent worker.`);
+	// Extract the app name (e.g., "xyz" from "xyz.build.cloudflare.dev").
+	const appName = hostname.split('.')[0];
+	const dispatcher = env['DISPATCHER'];
+
+	try {
+		const worker = dispatcher.get(appName);
+		return await worker.fetch(request);
+	} catch (error: any) {
+		// This block catches errors if the binding doesn't exist or if worker.fetch() fails.
+		logger.warn(`Error dispatching to worker '${appName}': ${error.message}`);
+		return new Response('An error occurred while loading this application.', { status: 500 });
+	}
+}
+
+/**
+ * Main Worker fetch handler with robust, secure routing.
+ */
+const worker = {
+	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+		// --- Pre-flight Checks ---
+
+		// 1. Critical configuration check: Ensure custom domain is set.
+        const previewDomain = getPreviewDomain(env);
+		if (!previewDomain || previewDomain.trim() === '') {
+			console.error('FATAL: env.CUSTOM_DOMAIN is not configured in wrangler.toml or the Cloudflare dashboard.');
+			return new Response('Server configuration error: Application domain is not set.', { status: 500 });
+		}
+
+		const url = new URL(request.url);
+		const { hostname, pathname } = url;
+
+		// 2. Security: Immediately reject any requests made via an IP address.
+		const ipRegex = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+		if (ipRegex.test(hostname)) {
+			return new Response('Access denied. Please use the assigned domain name.', { status: 403 });
+		}
+
+		// --- Domain-based Routing ---
+
+		// Normalize hostnames for both local development (localhost) and production.
+		const isMainDomainRequest =
+			hostname === env.CUSTOM_DOMAIN || hostname === 'localhost';
+		const isSubdomainRequest =
+			hostname.endsWith(`.${previewDomain}`) ||
+			(hostname.endsWith('.localhost') && hostname !== 'localhost');
+
+		// Route 1: Main Platform Request (e.g., build.cloudflare.dev or localhost)
+		if (isMainDomainRequest) {
+            return app.fetch(request, env);
+		}
+
+		// Route 2: User App Request (e.g., xyz.build.cloudflare.dev or test.localhost)
+		if (isSubdomainRequest) {
+			return handleUserAppRequest(request, env);
+		}
+
+		return new Response('Not Found', { status: 404 });
+	},
+} satisfies ExportedHandler<Env>;
+
+export default worker;
