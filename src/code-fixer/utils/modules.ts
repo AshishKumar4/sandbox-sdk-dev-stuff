@@ -42,7 +42,7 @@ export function canModifyFile(filePath: string): boolean {
     // Exclude node_modules and other external directories
     if (filePath.includes('node_modules/') || 
         filePath.includes('.git/') ||
-        filePath.startsWith('/') && !filePath.startsWith('/app/') && !filePath.startsWith('/Users/')) {
+        filePath.startsWith('/') && !filePath.startsWith('/workspace/') && !filePath.startsWith('/Users/')) {
         return false;
     }
     

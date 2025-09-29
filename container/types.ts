@@ -332,7 +332,7 @@ export const getLogDbPath = (): string => {
 export const getCliToolsPath = (): string => {
   // In Docker container, use absolute path
   if (process.env.CONTAINER_ENV === 'docker') {
-    return '/app/container/cli-tools.ts';
+    return '/workspace/container/cli-tools.ts';
   }
   
   // For local development, try to find the cli-tools.ts file
