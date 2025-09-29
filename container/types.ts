@@ -315,9 +315,9 @@ export const DEFAULT_LOG_STORE_OPTIONS: LogStoreOptions = {
   bufferSize: 1000
 } as const;
 
-// Configurable paths - use environment variables or default to ./data directory
+// Configurable paths - use environment variables or default to ./.data directory
 export const getDataDirectory = (): string => {
-  return process.env.CLI_DATA_DIR || './data';
+  return process.env.CLI_DATA_DIR || './.data';
 };
 
 export const getErrorDbPath = (): string => {

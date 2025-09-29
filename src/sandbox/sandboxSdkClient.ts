@@ -155,7 +155,7 @@ export class SandboxSdkClient extends BaseSandboxService {
         const session = await this.getSandbox().createSession({
             id: instanceId,
             env: { NODE_ENV: "production" },
-            cwd: "/workspace",
+            cwd: `/workspace/${instanceId}`,
           });
         return session;
     }
@@ -384,7 +384,8 @@ export class SandboxSdkClient extends BaseSandboxService {
                 ".next",
                 ".cache",
                 ".idea",
-                ".DS_Store"
+                ".DS_Store",
+                '.data'
             ];
             // Build exclusion string for find command
             const excludedDirsFind = EXCLUDED_DIRS.map(dir => `-name "${dir}"`).join(" -o ");
@@ -571,7 +572,7 @@ export class SandboxSdkClient extends BaseSandboxService {
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
                 // Get recent logs only to avoid processing old content
-                const logsResult = await this.getLogs(instanceId, true);
+                const logsResult = await this.getLogs(instanceId, false);
                 
                 if (logsResult.success && logsResult.logs.stdout) {
                     const logs = logsResult.logs.stdout;
@@ -607,11 +608,9 @@ export class SandboxSdkClient extends BaseSandboxService {
 
     private async startDevServer(instanceId: string, port: number): Promise<string> {
         try {
+            const session = await this.getSandboxSession(instanceId);
             // Use CLI tools for enhanced monitoring instead of direct process start
-            const process = await this.getSandbox().startProcess(
-                `VITE_LOGGER_TYPE=json monitor-cli process start --instance-id ${instanceId} --port ${port} -- bun run dev`, 
-                { cwd: instanceId }
-            );
+            const process = await session.startProcess(`monitor-cli process start --instance-id ${instanceId} --port ${port} -- bun run dev`);
             this.logger.info('Development server started', { instanceId, processId: process.id });
             
             // Wait for the server to be ready (non-blocking - always returns the process ID)
@@ -1540,7 +1539,7 @@ export class SandboxSdkClient extends BaseSandboxService {
                         for (const message of fileResult.messages || []) {
                             lintIssues.push({
                                 message: message.message,
-                                filePath: fileResult.filePath,
+                                filePath: fileResult.filePath.replace(`/workspace/${instanceId}/`, ''),
                                 line: message.line || 0,
                                 column: message.column,
                                 severity: this.mapESLintSeverity(message.severity),
@@ -1591,7 +1590,7 @@ export class SandboxSdkClient extends BaseSandboxService {
                                 // Start building new error
                                 currentError = {
                                     message: match[5].trim(),
-                                    filePath: match[1].trim(),
+                                    filePath: match[1].trim().replace(`/workspace/${instanceId}/`, ''),
                                     line: parseInt(match[2]),
                                     column: parseInt(match[3]),
                                     severity: 'error' as const,
