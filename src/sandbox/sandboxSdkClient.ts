@@ -25,6 +25,7 @@ import {
     GitHubPushRequest, GitHubPushResponse, GitHubExportRequest, GitHubExportResponse,
     GetLogsResponse,
     ListInstancesResponse,
+    StoredError,
 } from './sandboxTypes';
 
 import { createObjectLogger } from '../logger';
@@ -170,8 +171,8 @@ export class SandboxSdkClient extends BaseSandboxService {
             const metadata = JSON.parse(metadataFile.content) as InstanceMetadata;
             this.metadataCache.set(instanceId, metadata); // Cache it
             return metadata;
-        } catch {
-            throw new Error('Failed to read instance metadata');
+        } catch (error) {
+            throw new Error(`Failed to read instance metadata: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
     }
 
@@ -590,7 +591,7 @@ export class SandboxSdkClient extends BaseSandboxService {
         try {
             // Use CLI tools for enhanced monitoring instead of direct process start
             const process = await this.getSandbox().startProcess(
-                `monitor-cli process start --instance-id ${instanceId} --port ${port} -- bun run dev`, 
+                `VITE_LOGGER_TYPE=json monitor-cli process start --instance-id ${instanceId} --port ${port} -- bun run dev`, 
                 { cwd: instanceId }
             );
             this.logger.info('Development server started', { instanceId, processId: process.id });
@@ -805,10 +806,7 @@ export class SandboxSdkClient extends BaseSandboxService {
             
             // Allocate single port for both dev server and tunnel
             const allocatedPort = await this.allocateAvailablePort();
-                
-            // Start cloudflared tunnel using the same port as dev server
-            // const tunnelPromise = this.startCloudflaredTunnel(instanceId, allocatedPort);
-                
+
             this.logger.info('Installing dependencies', { instanceId });
             const installResult = await this.executeCommand(instanceId, `bun install`);
             this.logger.info('Dependencies installed', { instanceId });
@@ -816,16 +814,9 @@ export class SandboxSdkClient extends BaseSandboxService {
             if (installResult.exitCode === 0) {
                 // Try to start development server in background
                 try {
-                    // Set local environment variables if provided
-                    // if (localEnvVars) {
-                    //     await this.setLocalEnvVars(instanceId, localEnvVars);
-                    // }
                     // Initialize git repository
                     await this.executeCommand(instanceId, `git init`);
                     this.logger.info('Git repository initialized', { instanceId });
-                    // this.logger.info(`Running setup script for ${instanceId}`);
-                    // const setupResult = await this.executeCommand(instanceId, `[ -f setup.sh ] && bash setup.sh ${projectName}`);
-                    // this.logger.info(`Setup result: STDOUT: ${setupResult.stdout}, STDERR: ${setupResult.stderr}`);
                     // Start dev server on allocated port
                     const processId = await this.startDevServer(instanceId, allocatedPort);
                     this.logger.info('Instance created successfully', { instanceId, processId, port: allocatedPort });
@@ -839,10 +830,15 @@ export class SandboxSdkClient extends BaseSandboxService {
                         previewURL = previewURL.replace(env.CUSTOM_DOMAIN, previewDomain);
                     }
                         
-                    // Wait for tunnel URL (tunnel forwards to same port)
-                    // const tunnelURL = await tunnelPromise;
-                        
                     this.logger.info('Preview URL exposed', { instanceId, previewURL });
+
+                    // In the background, run an iteration of static analysis to build up cache
+                    Promise.allSettled([
+                        this.executeCommand(instanceId, `bun run lint`),
+                        this.executeCommand(instanceId, `bunx tsc -b --incremental --noEmit --pretty false`)
+                    ]).then(() => {
+                        this.logger.info('Static analysis completed', { instanceId });
+                    });
                         
                     return { previewURL, tunnelURL: '', processId, allocatedPort };
                 } catch (error) {
@@ -1323,6 +1319,10 @@ export class SandboxSdkClient extends BaseSandboxService {
             for (const command of commands) {
                 try {
                     const result = await this.executeCommand(instanceId, command, timeout);
+                    if (result.exitCode === 2 && result.stderr.includes('/bin/sh: 1: cd: can\'t cd to i-')) {
+                        throw new Error(result.stderr);
+                    }
+                    
                     
                     results.push({
                         command,
@@ -1333,18 +1333,10 @@ export class SandboxSdkClient extends BaseSandboxService {
                     });
                     
                     if (result.exitCode !== 0) {
-                        const error: RuntimeError = {
-                            timestamp: new Date(),
-                            message: `Command failed: ${command}`,
-                            stack: result.stderr,
-                            severity: 'error',
-                            source: 'command_execution',
-                            rawOutput: `Command: ${command}\nExit code: ${result.exitCode}\nSTDOUT: ${result.stdout}\nSTDERR: ${result.stderr}`
-                        };
-                        this.logger.error('Command execution failed', { command, error });
+                        this.logger.error('Command execution failed', { command, error: result.stderr });
                     }
                     
-                    this.logger.info('Command executed', { command, exitCode: result.exitCode });
+                    this.logger.info('Command executed', { command, exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr });
                 } catch (error) {
                     this.logger.error('Command execution failed with error', { command, error });
                     results.push({
@@ -1357,7 +1349,6 @@ export class SandboxSdkClient extends BaseSandboxService {
             }
 
             const successCount = results.filter(r => r.success).length;
-
             return {
                 success: true,
                 results,
@@ -1371,7 +1362,7 @@ export class SandboxSdkClient extends BaseSandboxService {
                     command: cmd,
                     success: false,
                     output: '',
-                    error: 'Instance error'
+                    error: 'Instance error' 
                 })),
                 error: `Failed to execute commands: ${error instanceof Error ? error.message : 'Unknown error'}`
             };
@@ -1385,11 +1376,11 @@ export class SandboxSdkClient extends BaseSandboxService {
     async getInstanceErrors(instanceId: string, clear?: boolean): Promise<RuntimeErrorResponse> {
         try {
             let errors: RuntimeError[] = [];
-            const cmd = `timeout 3s monitor-cli errors list -i ${instanceId} --format json`;
+            const cmd = `timeout 3s monitor-cli errors list -i ${instanceId} --format json ${clear ? '--reset' : ''}`;
             const result = await this.executeCommand(instanceId, cmd, 15000);
             
             if (result.exitCode === 0) {
-                let response: any;
+                let response: {success: boolean, errors: StoredError[]};
                 try {
                     response = JSON.parse(result.stdout);
                     this.logger.info('getInstanceErrors', result.stdout);
@@ -1399,23 +1390,7 @@ export class SandboxSdkClient extends BaseSandboxService {
                 }
                 if (response.success && response.errors) {
                     // Convert StoredError objects to RuntimeError format
-                    // CLI returns StoredError objects with snake_case field names
-                    errors = response.errors.map((err: Record<string, unknown>) => ({
-                        timestamp: err.last_occurrence || err.created_at,
-                        message: String(err.message || ''),
-                        // stack: err.stack_trace ? String(err.stack_trace) : undefined, // Commented out to save memory
-                        // source: undefined, // Commented out - not needed for now
-                        filePath: err.source_file ? String(err.source_file) : undefined,
-                        lineNumber: typeof err.line_number === 'number' ? err.line_number : undefined,
-                        columnNumber: typeof err.column_number === 'number' ? err.column_number : undefined,
-                        severity: this.mapSeverityToLegacy(String(err.severity || 'error')),
-                        rawOutput: err.raw_output ? String(err.raw_output) : undefined
-                    }));
-
-                    // Auto-clear if requested
-                    if (clear && errors.length > 0) {
-                        this.clearInstanceErrors(instanceId);   // Call in the background
-                    }
+                    errors = response.errors;
 
                     return {
                         success: true,
@@ -1713,7 +1688,6 @@ export class SandboxSdkClient extends BaseSandboxService {
     // ==========================================
     // DEPLOYMENT
     // ==========================================
-
     async deployToCloudflareWorkers(instanceId: string): Promise<DeploymentResult> {
         try {
             this.logger.info('Starting deployment', { instanceId });
@@ -1774,7 +1748,53 @@ export class SandboxSdkClient extends BaseSandboxService {
             const workerContent = workerFile.content;
             this.logger.info('Worker script loaded', { sizeKB: (workerContent.length / 1024).toFixed(2) });
             
-            // Step 4: Check for assets and process them
+            // Step 3a: Check for additional worker modules (ESM imports)
+            // Process them the same way as assets but as strings for the Map
+            let additionalModules: Map<string, string> | undefined;
+            try {
+                const workerAssetsPath = `${instanceId}/dist/assets`;
+                const workerAssetsResult = await sandbox.exec(`test -d ${workerAssetsPath} && echo "exists" || echo "missing"`);
+                const hasWorkerAssets = workerAssetsResult.exitCode === 0 && workerAssetsResult.stdout.trim() === "exists";
+                
+                if (hasWorkerAssets) {
+                    this.logger.info('Processing additional worker modules', { workerAssetsPath });
+                    
+                    // Find all JS files in the worker assets directory
+                    const findResult = await sandbox.exec(`find ${workerAssetsPath} -type f -name "*.js"`);
+                    if (findResult.exitCode === 0) {
+                        const modulePaths = findResult.stdout.trim().split('\n').filter(path => path);
+                        
+                        if (modulePaths.length > 0) {
+                            additionalModules = new Map<string, string>();
+                            
+                            for (const fullPath of modulePaths) {
+                                const relativePath = fullPath.replace(`${instanceId}/dist/`, '');
+                                
+                                try {
+                                    const buffer = await this.readFileAsBase64Buffer(fullPath);
+                                    const moduleContent = buffer.toString('utf8');
+                                    additionalModules.set(relativePath, moduleContent);
+                                    
+                                    this.logger.info('Worker module loaded', { 
+                                        path: relativePath, 
+                                        sizeKB: (moduleContent.length / 1024).toFixed(2) 
+                                    });
+                                } catch (error) {
+                                    this.logger.warn(`Failed to read worker module ${fullPath}:`, error);
+                                }
+                            }
+                            
+                            if (additionalModules.size > 0) {
+                                this.logger.info('Found additional worker modules', { count: additionalModules.size });
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                this.logger.error('Failed to process additional worker modules:', error);
+            }
+            
+            // Step 4: Check for static assets and process them
             const assetsPath = `${instanceId}/dist/client`;
             let assetsManifest: Record<string, { hash: string; size: number }> | undefined;
             let fileContents: Map<string, Buffer> | undefined;
@@ -1783,12 +1803,12 @@ export class SandboxSdkClient extends BaseSandboxService {
             const hasAssets = assetDirResult.exitCode === 0 && assetDirResult.stdout.trim() === "exists";
             
             if (hasAssets) {
-                this.logger.info('Processing assets', { assetsPath });
+                this.logger.info('Processing static assets', { assetsPath });
                 const assetProcessResult = await this.processAssetsInSandbox(instanceId, assetsPath);
                 assetsManifest = assetProcessResult.assetsManifest;
                 fileContents = assetProcessResult.fileContents;
             } else {
-                this.logger.info('No assets found, deploying worker only');
+                this.logger.info('No static assets found, deploying worker only');
             }
             
             // Step 5: Override config for dispatch deployment
@@ -1818,7 +1838,7 @@ export class SandboxSdkClient extends BaseSandboxService {
                         dispatchNamespace: env.DISPATCH_NAMESPACE as string
                     },
                     fileContents,
-                    undefined, // additionalModules
+                    additionalModules,
                     config.migrations,
                     config.assets
                 );
@@ -1854,9 +1874,9 @@ export class SandboxSdkClient extends BaseSandboxService {
             };
         }
     }
-
+    
     /**
-     * Process assets in sandbox and create manifest for deployment
+     * Process static assets in sandbox and create manifest for deployment
      */
     private async processAssetsInSandbox(_instanceId: string, assetsPath: string): Promise<{
         assetsManifest: Record<string, { hash: string; size: number }>;
@@ -1881,22 +1901,14 @@ export class SandboxSdkClient extends BaseSandboxService {
             const relativePath = fullPath.replace(`${assetsPath}/`, '/');
             
             try {
-                const fileResult = await sandbox.readFile(fullPath);
-                if (fileResult.success) {
-                    // Convert string content to Buffer (assuming binary safe encoding)
-                    const buffer = Buffer.from(fileResult.content, 'binary');
-                    fileContents.set(relativePath, buffer);
-                    
-                    // Convert to ArrayBuffer for hash calculation
-                    const arrayBuffer = new ArrayBuffer(buffer.length);
-                    const view = new Uint8Array(arrayBuffer);
-                    for (let i = 0; i < buffer.length; i++) {
-                        view[i] = buffer[i];
-                    }
-                    filesAsArrayBuffer.set(relativePath, arrayBuffer);
-                    
-                    this.logger.info('Asset file processed', { path: relativePath, sizeBytes: buffer.length });
-                }
+                // Use base64 encoding to preserve binary files and Unicode
+                const buffer = await this.readFileAsBase64Buffer(fullPath);
+                fileContents.set(relativePath, buffer);
+                
+                const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
+                filesAsArrayBuffer.set(relativePath, arrayBuffer);
+                
+                this.logger.info('Asset file processed', { path: relativePath, sizeBytes: buffer.length });
             } catch (error) {
                 this.logger.warn(`Failed to read asset file ${fullPath}:`, error);
             }
@@ -1908,6 +1920,21 @@ export class SandboxSdkClient extends BaseSandboxService {
         this.logger.info('Asset manifest created', { assetCount });
         
         return { assetsManifest, fileContents };
+    }
+    
+    /**
+     * Read file from sandbox as base64 and convert to Buffer
+     */
+    private async readFileAsBase64Buffer(filePath: string): Promise<Buffer> {
+        const sandbox = this.getSandbox();
+        
+        // Use base64 with no line wrapping (-w 0) to preserve binary data
+        const base64Result = await sandbox.exec(`base64 -w 0 "${filePath}"`);
+        if (base64Result.exitCode !== 0) {
+            throw new Error(`Failed to encode file: ${base64Result.stderr}`);
+        }
+        
+        return Buffer.from(base64Result.stdout, 'base64');
     }
 
     /**
@@ -1927,17 +1954,54 @@ export class SandboxSdkClient extends BaseSandboxService {
     // ==========================================
 
     private async createLatestCommit(instanceId: string, commitMessage: string): Promise<string> {
-        // Add and commit changes using the provided or default commit message
-        const addResult = await this.executeCommand(instanceId, `git add .`);
-        if (addResult.exitCode !== 0) {
-            throw new Error(`Git add failed: ${addResult.stderr}`);
+        // Sanitize commit message to prevent shell injection
+        // Remove control characters, limit length, and escape special characters
+        const sanitizedMessage = commitMessage
+            .substring(0, 500) // Limit message length
+            .replace(/[\x00-\x1F\x7F]/g, '') // Remove control characters
+            .replace(/[`$\\]/g, '\\$&') // Escape backticks, dollar signs, and backslashes
+            .replace(/"/g, '\\"') // Escape double quotes
+            .trim() || 'Auto-commit'; // Fallback to default message if empty
+        
+        // Check if there are changes to commit
+        const statusResult = await this.executeCommand(instanceId, `git status --porcelain`);
+        if (statusResult.exitCode !== 0) {
+            this.logger.warn(`Git status check failed: ${statusResult.stderr}`);
+        } else if (!statusResult.stdout.trim()) {
+            this.logger.info('No changes to commit');
+            // Return current HEAD if no changes
+            const hashResult = await this.executeCommand(instanceId, `git rev-parse HEAD`);
+            if (hashResult.exitCode === 0) {
+                return hashResult.stdout.trim();
+            }
+            throw new Error(`No commits found in repository: ${hashResult.stderr}`);
         }
-                
-        const commitResult = await this.executeCommand(instanceId, `git commit -m "${commitMessage.replace(/"/g, '\\"')}"`);
+        
+        // Add all changes (including untracked files)
+        const addResult = await this.executeCommand(instanceId, `git add -A`);
+        if (addResult.exitCode !== 0) {
+            // Try alternative add command if the first fails
+            const altAddResult = await this.executeCommand(instanceId, `git add . 2>/dev/null || git add --all`);
+            if (altAddResult.exitCode !== 0) {
+                throw new Error(`Git add failed: ${addResult.stderr || altAddResult.stderr}`);
+            }
+        }
+        
+        // Commit with sanitized message
+        const commitResult = await this.executeCommand(instanceId, `git commit -m "${sanitizedMessage}" --allow-empty-message`);
         if (commitResult.exitCode !== 0) {
+            // Check if error is due to no changes (shouldn't happen due to earlier check, but be safe)
+            if (commitResult.stdout.includes('nothing to commit') || 
+                commitResult.stderr.includes('nothing to commit')) {
+                this.logger.info('Nothing to commit, working tree clean');
+                const hashResult = await this.executeCommand(instanceId, `git rev-parse HEAD`);
+                if (hashResult.exitCode === 0) {
+                    return hashResult.stdout.trim();
+                }
+            }
             throw new Error(`Git commit failed: ${commitResult.stderr}`);
         }
-                
+        
         // Extract commit hash from the commit result
         const hashResult = await this.executeCommand(instanceId, `git rev-parse HEAD`);
         if (hashResult.exitCode === 0) {
@@ -2281,21 +2345,5 @@ export class SandboxSdkClient extends BaseSandboxService {
 
         this.logger.info(`Successfully read ${files.length}/${filePaths.length} files for GitHub push`);
         return files;
-    }
-
-    /**
-     * Map enhanced severity levels to legacy format for backward compatibility
-     */
-    private mapSeverityToLegacy(severity: string): 'warning' | 'error' | 'fatal' {
-        switch (severity) {
-            case 'fatal':
-                return 'fatal';
-            case 'error':
-                return 'error';
-            case 'warning':
-            case 'info':
-            default:
-                return 'warning';
-        }
     }
 }
