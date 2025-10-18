@@ -15,12 +15,7 @@
         "class_name": "UserAppSandboxService",
         "image": "./SandboxDockerfile",
         "max_instances": 20,
-        // "instance_type": "standard",
-        "instance_type": {
-          "vcpu": 4,
-          "memory_mib": 2048,
-          "disk_mb": 4000
-        },
+        "instance_type": "standard-4",
         "rollout_step_percentage": 100
       }
     ],
@@ -98,9 +93,11 @@
         "TEMPLATES_GATEWAY_URL": "https://templates.coder.eti-india.workers.dev",
         "JWT_SECRET": "your-secure-auth-token-here",
         "MAX_SANDBOX_INSTANCES": "20",
-        "ALLOCATION_STRATEGY":"many_to_one",
+        "ALLOCATION_STRATEGY":"one_to_one",
         "CUSTOM_PREVIEW_DOMAIN":"",
         "CUSTOM_DOMAIN": "vibecoder.cloudflare.dev",
+        "ENVIRONMENT": "prod",
+        "USE_TUNNEL_FOR_PREVIEW": false,
         "DISPATCH_NAMESPACE": "orange-build-default-namespace"
 	}
 	/**

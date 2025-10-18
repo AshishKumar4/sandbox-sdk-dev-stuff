@@ -1,5 +1,7 @@
 
+import { createLogger } from './logger';
 import { proxyToSandbox } from "@cloudflare/sandbox";
+import { isDispatcherAvailable } from './utils/dispatcherUtils';
 import { Hono } from 'hono';
 import { SandboxSdkClient } from './sandbox/sandboxSdkClient';
 import { 
@@ -10,8 +12,8 @@ import {
   GitHubExportRequest,
   GitHubPushRequest
 } from './sandbox/sandboxTypes';
-import { createLogger } from "./logger";
 import { getPreviewDomain } from "./utils/urls";
+import { FileOutputType } from './schemas';
 
 // Export the Sandbox class in your Worker
 export { Sandbox as UserAppSandboxService, Sandbox as DeployerService, Sandbox} from "@cloudflare/sandbox";
@@ -23,7 +25,7 @@ async function getClientForSession(c: any, envVars?: Record<string, string>): Pr
   const hostname = url.hostname === 'localhost' ? `localhost:${url.port}`: url.hostname;
     console.log('Session ID:', sessionId, 'Hostname:', hostname, 'Env Vars:', envVars);
     
-    const client = new SandboxSdkClient(sessionId);
+    const client = new SandboxSdkClient(sessionId, sessionId);
     await client.initialize();
     return client;
 }
@@ -69,6 +71,7 @@ const processController = {
         validatedBody.templateName,
         validatedBody.projectName,
         validatedBody.webhookUrl,
+        validatedBody.envVars
       );
       
       return c.json(response);
@@ -151,6 +154,22 @@ const processController = {
       return c.json({ 
         success: false, 
         error: `Failed to write files: ${error instanceof Error ? error.message : 'Unknown error'}` 
+      }, 500);
+    }
+  },
+
+  async updateProjectName(c: any) {
+    try {
+      const instanceId = c.req.param('id');
+      const body = await c.req.json();
+      const validatedBody = body as { projectName: string };
+      const client = await getClientForSession(c);
+      const response = await client.updateProjectName(instanceId, validatedBody.projectName);
+      return c.json(response);
+    } catch (error) {
+      return c.json({ 
+        success: false, 
+        error: `Failed to update project name: ${error instanceof Error ? error.message : 'Unknown error'}` 
       }, 500);
     }
   },
@@ -268,8 +287,11 @@ const processController = {
   async getLogs(c: any) {
     try {
       const instanceId = c.req.param('id');
+      // Get durationSeconds and onlyRecent from query params
+      const durationSeconds = c.req.query('durationSeconds') ? Number(c.req.query('durationSeconds')) : undefined;
+      const onlyRecent = c.req.query('onlyRecent') ? Boolean(c.req.query('onlyRecent')) : undefined;
       const client = await getClientForSession(c);
-      const response = await client.getLogs(instanceId);
+      const response = await client.getLogs(instanceId, onlyRecent, durationSeconds);
       return c.json(response);
     } catch (error) {
       return c.json({ 
@@ -309,28 +331,13 @@ const deploymentController = {
 
 // GitHub controllers
 const githubController = {
-  async exportToGitHub(c: any) {
-    try {
-      const instanceId = c.req.param('id');
-      const body = await c.req.json();
-      const validatedBody = body as GitHubExportRequest;
-      const client = await getClientForSession(c);
-      const response = await client.exportToGitHub(instanceId, validatedBody);
-      return c.json(response);
-    } catch (error) {
-      return c.json({ 
-        success: false, 
-        error: `Failed to export to GitHub: ${error instanceof Error ? error.message : 'Unknown error'}` 
-      }, 500);
-    }
-  },
   async pushToGitHub(c: any) {
     try {
       const instanceId = c.req.param('id');
       const body = await c.req.json();
-      const validatedBody = body as GitHubPushRequest;
+      const validatedBody = body as { request: GitHubPushRequest, files: FileOutputType[] };
       const client = await getClientForSession(c);
-      const response = await client.pushToGitHub(instanceId, validatedBody);
+      const response = await client.pushToGitHub(instanceId, validatedBody.request, validatedBody.files);
       return c.json(response);
     } catch (error) {
       return c.json({ 
@@ -374,6 +381,7 @@ app.get('/instances/:id', processController.getInstanceDetails);
 app.get('/instances/:id/status', processController.getTemplateBootstrapStatus);
 app.get('/instances/:id/files', processController.getFiles);
 app.post('/instances/:id/files', processController.writeFiles);
+app.post('/instances/:id/name', processController.updateProjectName);
 app.delete('/instances/:id', processController.shutdown);
 app.get('/instances/:id/template', processController.getRunningTemplateDetails);
 app.post('/instances/:id/commands', processController.executeCommandsInInstance);
@@ -388,11 +396,38 @@ app.post('/instances/:id/deploy', deploymentController.deployInstance);
 app.get('/instances/:id/deploy', deploymentController.getInstanceDeploymentInfo);
 
 // GitHub integration routes
-app.post('/instances/:id/github/export', githubController.exportToGitHub);
 app.post('/instances/:id/github/push', githubController.pushToGitHub);
 
 // Logger for the main application and handlers
 const logger = createLogger('App');
+
+
+/**
+ * Validate origin for CORS requests - only allow main domain and subdomains
+ */
+function validateOrigin(origin: string | null, env: Env): string | null {
+    // if (!origin) return null;
+    
+    // try {
+    //     const originUrl = new URL(origin);
+    //     const previewDomain = getPreviewDomain(env);
+        
+    //     // Allow main domain and all preview subdomains
+    //     if (
+    //         originUrl.hostname === env.CUSTOM_DOMAIN ||
+    //         originUrl.hostname.endsWith(`.${previewDomain}`) ||
+    //         originUrl.hostname === 'localhost' ||
+    //         originUrl.hostname.endsWith('.localhost')
+    //     ) {
+    //         return origin;
+    //     }
+    // } catch {
+    //     return null;
+    // }
+    
+    // return null;
+    return '*'
+}
 
 /**
  * Handles requests for user-deployed applications on subdomains.
@@ -405,32 +440,71 @@ const logger = createLogger('App');
  * @returns A Response object from the sandbox, the dispatched worker, or an error.
  */
 async function handleUserAppRequest(request: Request, env: Env): Promise<Response> {
-	const url = new URL(request.url);
-	const { hostname } = url;
-	logger.info(`Handling user app request for: ${hostname}`);
+    const url = new URL(request.url);
+    const { hostname } = url;
+    logger.info(`Handling user app request for: ${hostname}`);
 
-	// 1. Attempt to proxy to a live development sandbox.
-	// proxyToSandbox doesn't consume the request body on a miss, so no clone is needed here.
-	const sandboxResponse = await proxyToSandbox(request, env);
-	if (sandboxResponse) {
-		logger.info(`Serving response from sandbox for: ${hostname}`);
-		return sandboxResponse;
-	}
 
-	// 2. If sandbox misses, attempt to dispatch to a deployed worker.
-	logger.info(`Sandbox miss for ${hostname}, attempting dispatch to permanent worker.`);
-	// Extract the app name (e.g., "xyz" from "xyz.build.cloudflare.dev").
-	const appName = hostname.split('.')[0];
-	const dispatcher = env['DISPATCHER'];
+    // 1. Attempt to proxy to a live development sandbox.
+    // proxyToSandbox doesn't consume the request body on a miss, so no clone is needed here.
+    const sandboxResponse = await proxyToSandbox(request, env);
+    if (sandboxResponse) {
+        logger.info(`Serving response from sandbox for: ${hostname}`, sandboxResponse);
+        // Add headers to identify this as a sandbox response
+        const headers = new Headers(sandboxResponse.headers);
+        headers.set('Access-Control-Expose-Headers', 'X-Preview-Type');
+        if (sandboxResponse.status == 500) {
+            headers.set('X-Preview-Type', 'sandbox-error');
+        } else {
+            headers.set('X-Preview-Type', 'sandbox');
+        }
+        
+        return new Response(sandboxResponse.body, {
+            status: sandboxResponse.status,
+            statusText: sandboxResponse.statusText,
+            headers,
+        });
+    }
 
-	try {
-		const worker = dispatcher.get(appName);
-		return await worker.fetch(request);
-	} catch (error: any) {
-		// This block catches errors if the binding doesn't exist or if worker.fetch() fails.
-		logger.warn(`Error dispatching to worker '${appName}': ${error.message}`);
-		return new Response('An error occurred while loading this application.', { status: 500 });
-	}
+
+    // 2. If sandbox misses, attempt to dispatch to a deployed worker.
+    logger.info(`Sandbox miss for ${hostname}, attempting dispatch to permanent worker.`);
+    if (!isDispatcherAvailable(env)) {
+        logger.warn(`Dispatcher not available, cannot serve: ${hostname}`);
+        return new Response('This application is not currently available.', { status: 404 });
+    }
+
+
+    // Extract the app name (e.g., "xyz" from "xyz.build.cloudflare.dev").
+    const appName = hostname.split('.')[0];
+    const dispatcher = env['DISPATCHER'];
+
+
+    try {
+        const worker = dispatcher.get(appName);
+        const dispatcherResponse = await worker.fetch(request);
+        
+        // Add headers to identify this as a dispatcher response
+        const headers = new Headers(dispatcherResponse.headers);
+        headers.set('Access-Control-Expose-Headers', 'X-Preview-Type');
+        const origin = request.headers.get('Origin');
+        const allowedOrigin = validateOrigin(origin, env);
+        
+        // Only add CORS headers for validated origins
+        if (allowedOrigin) {
+            headers.set('X-Preview-Type', 'dispatcher');
+        }
+        
+        return new Response(dispatcherResponse.body, {
+            status: dispatcherResponse.status,
+            statusText: dispatcherResponse.statusText,
+            headers,
+        });
+    } catch (error: any) {
+        // This block catches errors if the binding doesn't exist or if worker.fetch() fails.
+        logger.warn(`Error dispatching to worker '${appName}': ${error.message}`);
+        return new Response('An error occurred while loading this application.', { status: 500 });
+    }
 }
 
 /**

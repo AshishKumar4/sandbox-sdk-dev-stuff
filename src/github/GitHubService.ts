@@ -263,83 +263,96 @@ export class GitHubService {
     }
 
     /**
-     * Plan commit strategy based on local vs remote state
+     * Plan commit strategy - simplified for ephemeral sandboxes
+     * Always creates a single commit with current snapshot since local git history is unreliable
      */
     private static planCommitStrategy(
         gitContext: GitContext | undefined,
         remoteCommits: RemoteCommit[],
         files: FileContent[]
     ): {
-        type: 'single_commit' | 'multi_commit' | 'incremental';
+        type: 'single_commit';
         commits: Array<{
             message: string;
             timestamp: string;
             files: FileContent[];
-        }>;
+        }>
     } {
-        const localCommits = gitContext?.localCommits || [];
+        // No files = nothing to commit
+        if (files.length === 0) {
+            return {
+                type: 'single_commit',
+                commits: []
+            };
+        }
         
-        // Strategy 1: No local history - single commit
-        if (localCommits.length === 0) {
-            return {
-                type: 'single_commit',
-                commits: [{
-                    message: 'Generated app',
-                    timestamp: new Date().toISOString(),
-                    files
-                }]
-            };
-        }
-
-        // Strategy 2: Remote is empty - push all local commits
-        if (remoteCommits.length === 0) {
-            return {
-                type: 'multi_commit',
-                commits: localCommits.map(commit => ({
-                    message: commit.message,
-                    timestamp: commit.timestamp,
-                    files // All files in final commit (simplified)
-                }))
-            };
-        }
-
-        // Strategy 3: Both exist - find what's new and create incremental commits
-        const newLocalCommits = localCommits.filter(local => 
-            !remoteCommits.some(remote => remote.message === local.message)
-        );
-
-        if (newLocalCommits.length > 0) {
-            return {
-                type: 'incremental',
-                commits: newLocalCommits.map(commit => ({
-                    message: commit.message,
-                    timestamp: commit.timestamp,
-                    files // All files in final state (simplified)
-                }))
-            };
-        }
-
-        // Strategy 4: Everything is in sync - only commit if there are uncommitted changes
-        if (gitContext?.hasUncommittedChanges) {
-            return {
-                type: 'single_commit',
-                commits: [{
-                    message: 'Update generated app',
-                    timestamp: new Date().toISOString(),
-                    files
-                }]
-            };
-        }
-
-        // Strategy 5: Everything is perfectly in sync - no commit needed
+        // Use most recent local commit message if available, otherwise default
+        const localCommits = gitContext?.localCommits || [];
+        const latestCommit = localCommits[localCommits.length - 1];
+        const message = latestCommit?.message || 'Generated app';
+        
+        // Always create a single commit with full current state
+        // The updateRef logic will handle fast-forward vs force based on divergence
         return {
             type: 'single_commit',
-            commits: []
+            commits: [{
+                message,
+                timestamp: new Date().toISOString(),
+                files
+            }]
         };
     }
 
     /**
-     * Execute the planned commit strategy
+     * Create blobs for files using GitHub API (binary-safe)
+     */
+    private static async createBlobsForFiles(
+        octokit: Octokit,
+        owner: string,
+        repo: string,
+        files: FileContent[]
+    ): Promise<Array<{ path: string; sha: string; mode: '100644' | '100755' }>> {
+        const blobs: Array<{ path: string; sha: string; mode: '100644' | '100755' }> = [];
+        
+        // Process files in batches to avoid rate limits
+        const batchSize = 50;
+        for (let i = 0; i < files.length; i += batchSize) {
+            const batch = files.slice(i, i + batchSize);
+            const batchPromises = batch.map(async (file) => {
+                // Detect if file should be base64 encoded (for binary safety)
+                const textExtensions = /\.(txt|json|js|ts|tsx|jsx|html|css|scss|md|yml|yaml|xml|svg|sh|py|rb|go|java|c|cpp|h|hpp|rs|toml|lock|gitignore|env)$/i;
+                const isLikelyText = textExtensions.test(file.filePath);
+                
+                // Use base64 for binary files to prevent corruption
+                const encoding = isLikelyText ? 'utf-8' : 'base64';
+                const content = isLikelyText ? file.fileContents : btoa(file.fileContents);
+                
+                const { data: blob } = await octokit.rest.git.createBlob({
+                    owner,
+                    repo,
+                    content,
+                    encoding
+                });
+                
+                // Detect executable files (basic heuristic)
+                const isExecutable = file.filePath.endsWith('.sh') || file.filePath.includes('bin/');
+                
+                return {
+                    path: file.filePath,
+                    sha: blob.sha,
+                    mode: (isExecutable ? '100755' : '100644') as '100644' | '100755'
+                };
+            });
+            
+            const batchResults = await Promise.all(batchPromises);
+            blobs.push(...batchResults);
+        }
+        
+        return blobs;
+    }
+
+    /**
+     * Execute the planned commit strategy with smart divergence handling
      */
     private static async executeCommitStrategy(
         octokit: Octokit,
@@ -385,33 +398,43 @@ export class GitHubService {
                     owner, repo,
                     bootstrapCommitSha: parentCommitSha 
                 });
-                
-                // Now fall through to use the normal tree-based approach below
             }
             
-            // Repository has commits (either existing or just bootstrapped) - use tree-based approach
+            // Get parent commit's tree SHA (fix: was using commit SHA as base_tree)
+            const { data: parentCommit } = await octokit.rest.git.getCommit({
+                owner,
+                repo,
+                commit_sha: parentCommitSha
+            });
+            const baseTreeSha = parentCommit.tree.sha;
+            
             GitHubService.logger.info('Creating tree-based commit', { 
                 owner, repo, 
-                baseTreeSha: parentCommitSha,
+                parentCommitSha,
+                baseTreeSha,
                 fileCount: commitPlan.files.length 
             });
             
-            // Create tree entries for all files
-            const treeEntries: GitHubTree[] = commitPlan.files.map(file => ({
-                path: file.filePath,
-                mode: '100644',
-                type: 'blob',
-                content: file.fileContents
+            // Create blobs for all files (binary-safe)
+            const blobs = await GitHubService.createBlobsForFiles(octokit, owner, repo, commitPlan.files);
+            
+            // Create tree entries using blob SHAs (not content)
+            const treeEntries = blobs.map(blob => ({
+                path: blob.path,
+                mode: blob.mode,
+                type: 'blob' as const,
+                sha: blob.sha
             }));
 
+            // Create tree with proper base_tree (tree SHA, not commit SHA)
             const { data: tree } = await octokit.rest.git.createTree({
                 owner,
                 repo,
                 tree: treeEntries,
-                base_tree: parentCommitSha
+                base_tree: baseTreeSha
             });
 
-            // Create commit info
+            // Create commit
             const commitInfo = {
                 message: commitPlan.message,
                 author: {
@@ -426,7 +449,6 @@ export class GitHubService {
                 }
             };
 
-            // Create the commit
             const { data: commit } = await octokit.rest.git.createCommit({
                 owner,
                 repo,
@@ -437,16 +459,72 @@ export class GitHubService {
                 committer: commitInfo.committer
             });
 
-            parentCommitSha = commit.sha;
-
-            // Update branch reference
-            await octokit.rest.git.updateRef({
-                owner,
-                repo,
-                ref: `heads/${branch}`,
-                sha: parentCommitSha,
-                force: true
+            const newCommitSha = commit.sha;
+            GitHubService.logger.info('Commit created, updating branch reference', {
+                owner, repo, branch,
+                oldSha: parentCommitSha,
+                newSha: newCommitSha
             });
+
+            // Try fast-forward update first (handles clean rebase case)
+            try {
+                await octokit.rest.git.updateRef({
+                    owner,
+                    repo,
+                    ref: `heads/${branch}`,
+                    sha: newCommitSha,
+                    force: false  // Try without force first
+                });
+                
+                GitHubService.logger.info('Branch updated successfully (fast-forward)', {
+                    owner, repo, branch, sha: newCommitSha
+                });
+                parentCommitSha = newCommitSha;
+                
+            } catch (error: any) {
+                // If fast-forward fails (divergent histories), force update
+                if (error.status === 422 || error.message?.includes('does not fast-forward')) {
+                    GitHubService.logger.warn('Fast-forward failed, forcing update (divergent histories detected)', {
+                        owner, repo, branch,
+                        error: error.message
+                    });
+                    
+                    // Re-fetch current remote head to ensure we're making an informed decision
+                    try {
+                        const { data: ref } = await octokit.rest.git.getRef({
+                            owner,
+                            repo,
+                            ref: `heads/${branch}`
+                        });
+                        const currentRemoteHead = ref.object.sha;
+                        
+                        GitHubService.logger.info('Current remote state before force', {
+                            remoteHead: currentRemoteHead,
+                            ourParent: parentCommitSha,
+                            diverged: currentRemoteHead !== parentCommitSha
+                        });
+                    } catch (refError) {
+                        GitHubService.logger.warn('Could not fetch current ref for comparison', refError);
+                    }
+                    
+                    // Force update (handles divergent history case)
+                    await octokit.rest.git.updateRef({
+                        owner,
+                        repo,
+                        ref: `heads/${branch}`,
+                        sha: newCommitSha,
+                        force: true
+                    });
+                    
+                    GitHubService.logger.info('Branch force-updated successfully (divergent histories resolved)', {
+                        owner, repo, branch, sha: newCommitSha
+                    });
+                    parentCommitSha = newCommitSha;
+                } else {
+                    // Other error - rethrow
+                    throw error;
+                }
+            }
         }
 
         return parentCommitSha;
