@@ -112,10 +112,88 @@ import { FileOutputType } from '@/schemas';
     }
   
       /**
-       * Get details for a specific template including files and structure
+       * Get details for a specific template - fully in-memory, no sandbox operations
+       * Downloads zip from R2, extracts in memory, and returns all files with metadata
        * Returns: { success: boolean, templateDetails?: {...}, error?: string }
        */
-      abstract getTemplateDetails(templateName: string): Promise<TemplateDetailsResponse>;
+      static async getTemplateDetails(templateName: string, downloadDir?: string): Promise<TemplateDetailsResponse> {
+        try {
+            const { ZipExtractor } = await import('./zipExtractor');
+            
+            // Download template zip from R2
+            const downloadUrl = downloadDir ? `${downloadDir}/${templateName}.zip` : `${templateName}.zip`;
+            const r2Object = await env.TEMPLATES_BUCKET.get(downloadUrl);
+              
+            if (!r2Object) {
+                throw new Error(`Template '${templateName}' not found in bucket`);
+            }
+        
+            const zipData = await r2Object.arrayBuffer();
+            
+            // Extract all files in memory
+            const allFiles = ZipExtractor.extractFiles(zipData);
+            
+            // Build file tree
+            const fileTree = ZipExtractor.buildFileTree(allFiles);
+            
+            // Extract dependencies
+            const dependencies = ZipExtractor.extractDependencies(allFiles);
+            
+            // Parse metadata files
+            const dontTouchFiles = ZipExtractor.findAndParseJson<string[]>(
+                allFiles, 
+                '.donttouch_files.json'
+            ) || [];
+            
+            const redactedFiles = ZipExtractor.findAndParseJson<string[]>(
+                allFiles, 
+                '.redacted_files.json'
+            ) || [];
+            
+            const importantFiles = ZipExtractor.findAndParseJson<string[]>(
+                allFiles, 
+                '.important_files.json'
+            ) || [];
+            
+            // Get template info from catalog
+            const catalogResponse = await BaseSandboxService.listTemplates();
+            const catalogInfo = catalogResponse.success 
+                ? catalogResponse.templates.find(t => t.name === templateName)
+                : null;
+            
+            // Remove metadata files from allFiles
+            const filteredFiles = allFiles.filter(f => 
+                !f.filePath.startsWith('.') || 
+                (!f.filePath.endsWith('.json') && !f.filePath.startsWith('.git'))
+            );
+            
+            const templateDetails: import('./sandboxTypes').TemplateDetails = {
+                name: templateName,
+                description: {
+                    selection: catalogInfo?.description.selection || '',
+                    usage: catalogInfo?.description.usage || ''
+                },
+                fileTree,
+                allFiles: filteredFiles,
+                language: catalogInfo?.language,
+                deps: dependencies,
+                importantFiles,
+                dontTouchFiles,
+                redactedFiles,
+                frameworks: catalogInfo?.frameworks || []
+            };
+
+            return {
+                success: true,
+                templateDetails
+            };
+        } catch (error) {
+            return {
+                success: false,
+                error: `Failed to get template details: ${error instanceof Error ? error.message : 'Unknown error'}`
+            };
+        }
+    }
   
     // ==========================================
     // INSTANCE LIFECYCLE (Required)

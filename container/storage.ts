@@ -116,7 +116,7 @@ export class StorageManager {
   }
 
   /**
-   * Wrapper for retry operations with consistent error handling
+   * Wrapper for retry operations
    */
   private retryOperation<T>(operation: () => Result<T>, maxRetries: number = 3): Result<T> {
     let attempt = 0;
@@ -184,9 +184,6 @@ export class StorageManager {
     return this.logStorage.getLogStats(instanceId);
   }
 
-  /**
-   * Unified transaction support for batch operations
-   */
   public transaction<T>(operation: () => T): T {
     // Use error database for transaction coordination
     const transaction = this.errorDb.transaction(operation);

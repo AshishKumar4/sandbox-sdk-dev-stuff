@@ -97,7 +97,7 @@
         "CUSTOM_PREVIEW_DOMAIN":"",
         "CUSTOM_DOMAIN": "vibecoder.cloudflare.dev",
         "ENVIRONMENT": "prod",
-        "USE_TUNNEL_FOR_PREVIEW": false,
+        "USE_TUNNEL_FOR_PREVIEW": true,
         "DISPATCH_NAMESPACE": "orange-build-default-namespace"
 	}
 	/**
