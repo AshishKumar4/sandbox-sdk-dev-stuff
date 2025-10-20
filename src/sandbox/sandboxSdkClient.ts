@@ -390,21 +390,9 @@ export class SandboxSdkClient extends BaseSandboxService {
         this.logger.info('Template details retrieved', { 
             templateName, 
             success: result.success,
-            fileCount: result.templateDetails?.allFiles.length 
+            fileCount: result.templateDetails?.allFiles ? Object.keys(result.templateDetails.allFiles).length : 0
         });
         return result;
-    }
-
-    private async getTemplateFromCatalog(templateName: string): Promise<TemplateInfo | null> {
-        try {
-            const templatesResponse = await SandboxSdkClient.listTemplates();
-            if (templatesResponse.success) {
-                return templatesResponse.templates.find(t => t.name === templateName) || null;
-            }
-            return null;
-        } catch {
-            return null;
-        }
     }
 
     private async buildFileTree(instanceId: string): Promise<FileTreeNode | undefined> {

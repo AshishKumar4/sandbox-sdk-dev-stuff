@@ -34,6 +34,8 @@ import {
   import { createObjectLogger, StructuredLogger } from '../logger';
   import { env } from 'cloudflare:workers'
 import { FileOutputType } from '@/schemas';
+import { ZipExtractor } from './zipExtractor';
+import { FileTreeBuilder } from './fileTreeBuilder';
   /**
    * Streaming event for enhanced command execution
    */
@@ -118,8 +120,6 @@ import { FileOutputType } from '@/schemas';
        */
       static async getTemplateDetails(templateName: string, downloadDir?: string): Promise<TemplateDetailsResponse> {
         try {
-            const { ZipExtractor } = await import('./zipExtractor');
-            
             // Download template zip from R2
             const downloadUrl = downloadDir ? `${downloadDir}/${templateName}.zip` : `${templateName}.zip`;
             const r2Object = await env.TEMPLATES_BUCKET.get(downloadUrl);
@@ -134,26 +134,22 @@ import { FileOutputType } from '@/schemas';
             const allFiles = ZipExtractor.extractFiles(zipData);
             
             // Build file tree
-            const fileTree = ZipExtractor.buildFileTree(allFiles);
+            const fileTree = FileTreeBuilder.buildFromTemplateFiles(allFiles, { rootPath: '.' });
             
-            // Extract dependencies
-            const dependencies = ZipExtractor.extractDependencies(allFiles);
+            // Extract dependencies from package.json
+            const packageJsonFile = allFiles.find(f => f.filePath === 'package.json');
+            const packageJson = packageJsonFile ? JSON.parse(packageJsonFile.fileContents) : null;
+            const dependencies = packageJson?.dependencies || {};
             
             // Parse metadata files
-            const dontTouchFiles = ZipExtractor.findAndParseJson<string[]>(
-                allFiles, 
-                '.donttouch_files.json'
-            ) || [];
+            const dontTouchFile = allFiles.find(f => f.filePath === '.donttouch_files.json');
+            const dontTouchFiles = dontTouchFile ? JSON.parse(dontTouchFile.fileContents) : [];
             
-            const redactedFiles = ZipExtractor.findAndParseJson<string[]>(
-                allFiles, 
-                '.redacted_files.json'
-            ) || [];
+            const redactedFile = allFiles.find(f => f.filePath === '.redacted_files.json');
+            const redactedFiles = redactedFile ? JSON.parse(redactedFile.fileContents) : [];
             
-            const importantFiles = ZipExtractor.findAndParseJson<string[]>(
-                allFiles, 
-                '.important_files.json'
-            ) || [];
+            const importantFile = allFiles.find(f => f.filePath === '.important_files.json');
+            const importantFiles = importantFile ? JSON.parse(importantFile.fileContents) : [];
             
             // Get template info from catalog
             const catalogResponse = await BaseSandboxService.listTemplates();
@@ -161,11 +157,17 @@ import { FileOutputType } from '@/schemas';
                 ? catalogResponse.templates.find(t => t.name === templateName)
                 : null;
             
-            // Remove metadata files from allFiles
+            // Remove metadata files and convert to map for efficient lookups
             const filteredFiles = allFiles.filter(f => 
                 !f.filePath.startsWith('.') || 
                 (!f.filePath.endsWith('.json') && !f.filePath.startsWith('.git'))
             );
+            
+            // Convert array to map: filePath -> fileContents
+            const filesMap: Record<string, string> = {};
+            for (const file of filteredFiles) {
+                filesMap[file.filePath] = file.fileContents;
+            }
             
             const templateDetails: import('./sandboxTypes').TemplateDetails = {
                 name: templateName,
@@ -174,7 +176,7 @@ import { FileOutputType } from '@/schemas';
                     usage: catalogInfo?.description.usage || ''
                 },
                 fileTree,
-                allFiles: filteredFiles,
+                allFiles: filesMap,
                 language: catalogInfo?.language,
                 deps: dependencies,
                 importantFiles,
