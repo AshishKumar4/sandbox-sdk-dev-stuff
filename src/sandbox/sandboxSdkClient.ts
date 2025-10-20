@@ -1,7 +1,6 @@
-import { getSandbox, Sandbox, parseSSEStream, LogEvent } from '@cloudflare/sandbox';
+import { getSandbox, Sandbox, parseSSEStream, LogEvent, ExecResult } from '@cloudflare/sandbox';
 
 import {
-    TemplateDetailsResponse,
     BootstrapResponse,
     GetInstanceResponse,
     BootstrapStatusResponse,
@@ -20,8 +19,6 @@ import {
     CodeIssue,
     InstanceDetails,
     LintSeverity,
-    TemplateInfo,
-    TemplateDetails,
     GitHubPushRequest, GitHubPushResponse,
     GetLogsResponse,
     ListInstancesResponse,
@@ -70,6 +67,8 @@ interface InstanceMetadata {
 
 type SandboxType = DurableObjectStub<Sandbox<Env>>;
 
+type ExecutionSession = Awaited<ReturnType<Sandbox['createSession']>>;
+
 /**
  * Streaming event for enhanced command execution
  */
@@ -109,8 +108,7 @@ function getAutoAllocatedSandbox(sessionId: string): string {
 export class SandboxSdkClient extends BaseSandboxService {
     private sandbox: SandboxType;
     private metadataCache = new Map<string, InstanceMetadata>();
-    private sessionCache = new Map<string, Awaited<ReturnType<Sandbox['createSession']>>>();
-    private defaultSession: Awaited<ReturnType<Sandbox['createSession']>> | null = null;
+    private sessionCache = new Map<string, ExecutionSession>();
 
     constructor(sandboxId: string, agentId: string) {
         if (env.ALLOCATION_STRATEGY === AllocationStrategy.MANY_TO_ONE) {
@@ -154,7 +152,7 @@ export class SandboxSdkClient extends BaseSandboxService {
      * Generic session getter with caching and automatic recovery
      * Properly handles existing sessions and ensures correct cwd
      */
-    private async getOrCreateSession(sessionId: string, cwd: string): Promise<Awaited<ReturnType<Sandbox['createSession']>>> {
+    private async getOrCreateSession(sessionId: string, cwd: string): Promise<ExecutionSession> {
         try {
             // Try to create a new session with the specified cwd
             this.logger.info('Creating new session', { sessionId, cwd });
@@ -189,35 +187,36 @@ export class SandboxSdkClient extends BaseSandboxService {
     }
 
     /**
-     * Get or create default session for anonymous sandbox operations
-     */
-    private async getDefaultSession() {
-        if (!this.defaultSession) {
-            this.defaultSession = await this.getOrCreateSession('sandbox-default', '/workspace');
-        }
-        return this.defaultSession;
-    }
-
-    /**
-     * Safe wrapper for direct sandbox exec calls using default session
-     */
-    private async safeSandboxExec(command: string, options?: {timeout?: number}): Promise<Awaited<ReturnType<Sandbox['exec']>>> {
-        const session = await this.getDefaultSession();
-        return await session.exec(command, options);
-    }
-
-    /**
      * Get or create a session for an instance with automatic caching.
      * Environment variables should be set via .dev.vars file.
      */
-    private async getInstanceSession(instanceId: string) {
+    private async getInstanceSession(instanceId: string, cwd?: string): Promise<ExecutionSession> {
         if (!this.sessionCache.has(instanceId)) {
-            const cwd = `/workspace/${instanceId}`;
+            cwd = cwd || `/workspace/${instanceId}`;
             const session = await this.getOrCreateSession(instanceId, cwd);
             this.sessionCache.set(instanceId, session);
         }
         const session = this.sessionCache.get(instanceId);
         return session!;
+    }
+
+    /**
+     * Get or create default session for anonymous sandbox operations
+     */
+    private async getDefaultSession(): Promise<ExecutionSession> {
+        return await this.getInstanceSession('sandbox-default', '/workspace');
+    }
+
+    private async executeCommand(instanceId: string, command: string, options?: {timeout?: number}): Promise<ExecResult> {
+        const session = await this.getInstanceSession(instanceId);
+        return await session.exec(command, options);
+    }
+
+    /**
+     * Safe wrapper for direct sandbox exec calls using default session
+     */
+    private async safeSandboxExec(command: string, options?: {timeout?: number}): Promise<ExecResult> {
+        return await this.executeCommand('sandbox-default', command, options);
     }
 
     /**
@@ -249,6 +248,20 @@ export class SandboxSdkClient extends BaseSandboxService {
         }
     }
 
+    private async writeFile(targetPath: string, data: string, session?: ExecutionSession)  {
+        if (!session) {
+            session = await this.getDefaultSession()
+        }
+        
+        // Ensure parent directory exists (mkdir -p is idempotent)
+        const dir = targetPath.substring(0, targetPath.lastIndexOf('/'));
+        if (dir) {
+            await session.exec(`mkdir -p "${dir}"`);
+        }
+        
+        return await session.writeFile(targetPath, data);
+    }
+
     async updateProjectName(instanceId: string, projectName: string): Promise<boolean> {
         try {
             await this.updateProjectConfiguration(instanceId, projectName);
@@ -268,11 +281,6 @@ export class SandboxSdkClient extends BaseSandboxService {
 
     private getInstanceMetadataFile(instanceId: string): string {
         return `${instanceId}-metadata.json`;
-    }
-
-    private async executeCommand(instanceId: string, command: string, timeout?: number): Promise<Awaited<ReturnType<Awaited<ReturnType<Sandbox['createSession']>>['exec']>>> {
-        const session = await this.getInstanceSession(instanceId);
-        return await session.exec(command, { timeout });
     }
 
     private async getInstanceMetadata(instanceId: string): Promise<InstanceMetadata> {
@@ -382,19 +390,7 @@ export class SandboxSdkClient extends BaseSandboxService {
             this.logger.info(`Template already exists`);
         }
     }
-
-    async getTemplateDetails(templateName: string): Promise<TemplateDetailsResponse> {
-        // Delegate to static method - no sandbox operations needed
-        this.logger.info('Retrieving template details', { templateName });
-        const result = await BaseSandboxService.getTemplateDetails(templateName);
-        this.logger.info('Template details retrieved', { 
-            templateName, 
-            success: result.success,
-            fileCount: result.templateDetails?.allFiles ? Object.keys(result.templateDetails.allFiles).length : 0
-        });
-        return result;
-    }
-
+    
     private async buildFileTree(instanceId: string): Promise<FileTreeNode | undefined> {
         try {
             // Generate find command with exclusions
@@ -858,7 +854,7 @@ export class SandboxSdkClient extends BaseSandboxService {
 
             this.logger.info('Installing dependencies', { instanceId });
             const [installResult, tunnelURL] = await Promise.all([
-                this.executeCommand(instanceId, `bun install`, 40000),
+                this.executeCommand(instanceId, `bun install`, { timeout: 40000 }),
                 tunnelUrlPromise
             ]);
             this.logger.info('Dependencies installed', { instanceId, tunnelURL });
@@ -1206,7 +1202,7 @@ export class SandboxSdkClient extends BaseSandboxService {
             
             const filteredFiles = files.filter(file => !donttouchFiles.has(file.filePath));
 
-            const writePromises = filteredFiles.map(file => session.writeFile(`/workspace/${instanceId}/${file.filePath}`, file.fileContents));
+            const writePromises = filteredFiles.map(file => this.writeFile(`/workspace/${instanceId}/${file.filePath}`, file.fileContents, session));
             
             const writeResults = await Promise.all(writePromises);
             
@@ -1377,7 +1373,7 @@ export class SandboxSdkClient extends BaseSandboxService {
             // Use CLI to get all logs and reset the file
             const durationArg = durationSeconds ? `--duration ${durationSeconds}` : '';
             const cmd = `timeout 10s monitor-cli logs get -i ${instanceId} --format raw ${onlyRecent ? '--reset' : ''} ${durationArg}`;
-            const result = await this.executeCommand(instanceId, cmd, 15000);
+            const result = await this.executeCommand(instanceId, cmd, { timeout: 15000 });
             return {
                 success: true,
                 logs: {
@@ -1409,7 +1405,7 @@ export class SandboxSdkClient extends BaseSandboxService {
             
             for (const command of commands) {
                 try {
-                    const result = await this.executeCommand(instanceId, command, timeout);
+                    const result = await this.executeCommand(instanceId, command, { timeout });
                     
                     results.push({
                         command,
@@ -1464,7 +1460,7 @@ export class SandboxSdkClient extends BaseSandboxService {
         try {
             let errors: RuntimeError[] = [];
             const cmd = `timeout 3s monitor-cli errors list -i ${instanceId} --format json ${clear ? '--reset' : ''}`;
-            const result = await this.executeCommand(instanceId, cmd, 15000);
+            const result = await this.executeCommand(instanceId, cmd, { timeout: 15000 });
             
             if (result.exitCode === 0) {
                 let response: {success: boolean, errors: StoredError[]};
@@ -1512,7 +1508,7 @@ export class SandboxSdkClient extends BaseSandboxService {
             // Try enhanced error system first - clear ALL errors
             try {
                 const cmd = `timeout 10s monitor-cli errors clear -i ${instanceId} --confirm`;
-                const result = await this.executeCommand(instanceId, cmd, 15000); // 15 second timeout
+                const result = await this.executeCommand(instanceId, cmd, { timeout: 15000 }); // 15 second timeout
                 
                 if (result.exitCode === 0) {
                     let response: any;

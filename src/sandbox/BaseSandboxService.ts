@@ -29,6 +29,7 @@ import {
     ListInstancesResponse,
     GitHubPushRequest,
     GitHubPushResponse,
+    TemplateDetails,
   } from './sandboxTypes';
   
   import { createObjectLogger, StructuredLogger } from '../logger';
@@ -169,7 +170,7 @@ import { FileTreeBuilder } from './fileTreeBuilder';
                 filesMap[file.filePath] = file.fileContents;
             }
             
-            const templateDetails: import('./sandboxTypes').TemplateDetails = {
+            const templateDetails: TemplateDetails = {
                 name: templateName,
                 description: {
                     selection: catalogInfo?.description.selection || '',

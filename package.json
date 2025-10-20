@@ -17,7 +17,7 @@
 	},
 	"devDependencies": {
 		"typescript": "^5.5.2",
-		"wrangler": "^4.42.0"
+		"wrangler": "^4.43.0"
 	},
 	"dependencies": {
 		"@babel/generator": "^7.26.2",
