@@ -14,6 +14,7 @@ import {
 } from './sandbox/sandboxTypes';
 import { getPreviewDomain } from "./utils/urls";
 import { FileOutputType } from './schemas';
+import { BaseSandboxService } from './sandbox/BaseSandboxService';
 
 // Export the Sandbox class in your Worker
 export { Sandbox as UserAppSandboxService, Sandbox as DeployerService, Sandbox} from "@cloudflare/sandbox";
@@ -48,7 +49,7 @@ const templateController = {
     try {
       const templateName = c.req.param('name');
       const client = await getClientForSession(c);
-      const response = await client.getTemplateDetails(templateName);
+      const response = await BaseSandboxService.getTemplateDetails(templateName);
       return c.json(response);
     } catch (error) {
       return c.json({ 
@@ -202,7 +203,7 @@ const processController = {
         }, 404);
       }
       
-      const templateResponse = await client.getTemplateDetails(instanceResponse.instance.templateName);
+      const templateResponse = await BaseSandboxService.getTemplateDetails(instanceResponse.instance.templateName);
       return c.json(templateResponse);
     } catch (error) {
       return c.json({ 

@@ -248,18 +248,100 @@ export class SandboxSdkClient extends BaseSandboxService {
         }
     }
 
-    private async writeFile(targetPath: string, data: string, session?: ExecutionSession)  {
-        if (!session) {
-            session = await this.getDefaultSession()
-        }
+    /**
+     * Write multiple files efficiently using a single shell script
+     * Reduces 2N requests to just 2 requests regardless of file count
+     * Uses base64 encoding to handle all content safely
+     */
+    private async writeFilesViaScript(
+        files: Array<{path: string, content: string}>,
+        session: ExecutionSession
+    ): Promise<Array<{file: string, success: boolean, error?: string}>> {
+        if (files.length === 0) return [];
+
+        this.logger.info('Writing files via shell script', { fileCount: files.length });
+
+        // Generate shell script
+        const scriptLines = ['#!/bin/bash'];
         
-        // Ensure parent directory exists (mkdir -p is idempotent)
-        const dir = targetPath.substring(0, targetPath.lastIndexOf('/'));
-        if (dir) {
-            await session.exec(`mkdir -p "${dir}"`);
+        for (const { path, content } of files) {
+            const utf8Bytes = new TextEncoder().encode(content);
+            
+            // Convert bytes to base64 in chunks to avoid stack overflow
+            const chunkSize = 8192;
+            const base64Chunks: string[] = [];
+            
+            for (let i = 0; i < utf8Bytes.length; i += chunkSize) {
+                const chunk = utf8Bytes.slice(i, i + chunkSize);
+                // Convert chunk to binary string
+                let binaryString = '';
+                for (let j = 0; j < chunk.length; j++) {
+                    binaryString += String.fromCharCode(chunk[j]);
+                }
+                // Encode chunk to base64
+                base64Chunks.push(btoa(binaryString));
+            }
+            
+            const base64 = base64Chunks.join('');
+            
+            scriptLines.push(
+                `mkdir -p "$(dirname "${path}")" && echo '${base64}' | base64 -d > "${path}" && echo "OK:${path}" || echo "FAIL:${path}"`
+            );
         }
-        
-        return await session.writeFile(targetPath, data);
+
+        const script = scriptLines.join('\n');
+        const scriptPath = '/tmp/batch_write.sh';
+
+        try {
+            // Write script (1 request)
+            const writeResult = await session.writeFile(scriptPath, script);
+            if (!writeResult.success) {
+                throw new Error('Failed to write batch script');
+            }
+
+            // Execute with bash
+            const { exitCode, stdout, stderr } = await session.exec(`bash ${scriptPath}`, { timeout: 60000 });
+            
+            // Parse results from output
+            const output = stdout + stderr;
+            const matches = output.matchAll(/OK:(.+)/g);
+            const successPaths = new Set<string>();
+            for (const match of matches) {
+                if (match[1]) successPaths.add(match[1]);
+            }
+            
+            const results = files.map(({ path }) => ({
+                file: path,
+                success: successPaths.has(path),
+                error: successPaths.has(path) ? undefined : 'Write failed'
+            }));
+
+            const successCount = successPaths.size;
+            const failedCount = files.length - successCount;
+
+            if (failedCount > 0) {
+                this.logger.warn('Batch write completed with errors', { 
+                    total: files.length, 
+                    success: successCount, 
+                    failed: failedCount 
+                });
+            } else {
+                this.logger.info('Batch write completed', { 
+                    total: files.length, 
+                    success: successCount 
+                });
+            }
+
+            return results;
+
+        } catch (error) {
+            this.logger.error('Batch write failed', error);
+            return files.map(({ path }) => ({
+                file: path,
+                success: false,
+                error: error instanceof Error ? error.message : 'Unknown error'
+            }));
+        }
     }
 
     async updateProjectName(instanceId: string, projectName: string): Promise<boolean> {
@@ -1202,26 +1284,21 @@ export class SandboxSdkClient extends BaseSandboxService {
             
             const filteredFiles = files.filter(file => !donttouchFiles.has(file.filePath));
 
-            const writePromises = filteredFiles.map(file => this.writeFile(`/workspace/${instanceId}/${file.filePath}`, file.fileContents, session));
+            // Use batch script for efficient writing (3 requests for any number of files)
+            const filesToWrite = filteredFiles.map(file => ({
+                path: `${file.filePath}`,
+                content: file.fileContents
+            }));
             
-            const writeResults = await Promise.all(writePromises);
+            const writeResults = await this.writeFilesViaScript(filesToWrite, session);
             
+            // Map results back to original format
             for (const writeResult of writeResults) {
-                if (writeResult.success) {
-                    results.push({
-                        file: writeResult.path,
-                        success: true
-                    });
-                    
-                    this.logger.info('File written', { filePath: writeResult.path });
-                } else {
-                    this.logger.error('File write failed', { filePath: writeResult.path });
-                    results.push({
-                        file: writeResult.path,
-                        success: false,
-                        error: 'Unknown error'
-                    });
-                }
+                results.push({
+                    file: writeResult.file.replace(`/workspace/${instanceId}/`, ''),
+                    success: writeResult.success,
+                    error: writeResult.error
+                });
             }
 
             // Add files that were not written to results
