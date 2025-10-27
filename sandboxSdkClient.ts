@@ -1,4 +1,4 @@
-import { getSandbox, Sandbox, parseSSEStream, LogEvent, ExecResult } from '@cloudflare/sandbox';
+import { getSandbox, Sandbox, parseSSEStream, LogEvent, ExecuteResponse } from '@cloudflare/sandbox';
 
 import {
     BootstrapResponse,
@@ -19,6 +19,7 @@ import {
     CodeIssue,
     InstanceDetails,
     LintSeverity,
+    GitHubPushRequest, GitHubPushResponse,
     GetLogsResponse,
     ListInstancesResponse,
     StoredError,
@@ -36,14 +37,16 @@ import {
 import { 
     createAssetManifest 
 } from '../deployer/utils/index';
-import { CodeFixResult, fixProjectIssues } from '../code-fixer';
+import { CodeFixResult, FileFetcher, fixProjectIssues } from '../code-fixer';
 import { FileObject } from '../code-fixer/types';
 import { generateId } from '../utils/idGenerator';
 import { ResourceProvisioner } from './resourceProvisioner';
 import { TemplateParser } from './templateParser';
 import { ResourceProvisioningResult } from './types';
+import { GitHubService } from '../github/GitHubService';
 import { getPreviewDomain } from '../utils/urls';
-import { isDev } from '../utils/envs'
+import { isDev } from '../utils/envs';
+import { FileOutputType } from '../schemas';
 import { FileTreeBuilder } from './fileTreeBuilder';
 // Export the Sandbox class in your Worker
 export { Sandbox as UserAppSandboxService, Sandbox as DeployerService} from "@cloudflare/sandbox";
@@ -64,7 +67,54 @@ interface InstanceMetadata {
 
 type SandboxType = DurableObjectStub<Sandbox<Env>>;
 
-type ExecutionSession = Awaited<ReturnType<Sandbox['createSession']>>;
+/**
+ * ExecutionSession wrapper for SDK 0.2.0 compatibility
+ * SDK 0.2.0 doesn't have sessions, so we wrap direct sandbox calls
+ * This wrapper simply delegates to the existing sandbox methods while maintaining cwd context
+ */
+class ExecutionSessionCompat {
+    constructor(
+        private sandbox: SandboxType,
+        public sessionId: string,
+        public cwd: string
+    ) {}
+
+    /**
+     * Execute command in the sandbox with optional cwd
+     */
+    async exec(command: string, options?: {timeout?: number}): Promise<ExecuteResponse> {
+        return await this.sandbox.exec(command, {
+            cwd: this.cwd,
+            ...options
+        });
+    }
+
+    /**
+     * Read file from sandbox - delegates to sandbox.readFile
+     */
+    async readFile(path: string): Promise<{success: boolean, content: string, path: string}> {
+        return await this.sandbox.readFile(path);
+    }
+
+    /**
+     * Write file to sandbox - delegates to sandbox.writeFile
+     */
+    async writeFile(path: string, content: string): Promise<{success: boolean, path: string}> {
+        return await this.sandbox.writeFile(path, content);
+    }
+
+    /**
+     * Start a background process - delegates to sandbox.startProcess
+     */
+    async startProcess(command: string): Promise<{id: string}> {
+        return await this.sandbox.startProcess(command, {
+            cwd: this.cwd
+        });
+    }
+}
+
+// Type alias for compatibility
+type ExecutionSession = ExecutionSessionCompat;
 
 /**
  * Streaming event for enhanced command execution
@@ -146,42 +196,20 @@ export class SandboxSdkClient extends BaseSandboxService {
     }
 
     /**
-     * Generic session getter with caching and automatic recovery
-     * Properly handles existing sessions and ensures correct cwd
+     * Create a new session wrapper (no caching - that's handled by getInstanceSession)
+     * 
+     * For SDK 0.2.0: Creates a wrapper that translates session calls to direct sandbox calls
      */
     private async getOrCreateSession(sessionId: string, cwd: string): Promise<ExecutionSession> {
-        try {
-            // Try to create a new session with the specified cwd
-            this.logger.info('Creating new session', { sessionId, cwd });
-            const session = await this.getSandbox().createSession({ id: sessionId, cwd });
-            return session;
-        } catch (error) {
-            // If session already exists, get it
-            this.logger.info('Session already exists, retrieving it', { sessionId, cwd });
-            const existingSession = await this.getSandbox().getSession(sessionId);
-            
-            // Verify the cwd matches what we expect
-            const pwdResult = await existingSession.exec('pwd');
-            const actualCwd = pwdResult.stdout.trim();
-            
-            if (actualCwd !== cwd) {
-                this.logger.warn('Existing session has wrong cwd, attempting to change directory', { 
-                    sessionId, 
-                    expectedCwd: cwd, 
-                    actualCwd 
-                });
-                // Try to cd to the correct directory
-                await existingSession.exec(`cd ${cwd}`);
-                const verifyResult = await existingSession.exec('pwd');
-                if (verifyResult.stdout.trim() !== cwd) {
-                    // throw new Error(`Failed to set working directory to ${cwd}, currently at ${verifyResult.stdout.trim()}`);
-                    this.logger.error(`Failed to set working directory to ${cwd}, currently at ${verifyResult.stdout.trim()}`);
-                }
-                this.logger.info('Successfully changed directory for existing session', { sessionId, cwd });
-            }
-            
-            return existingSession;
-        }
+        // Create new session wrapper for SDK 0.2.0
+        const session = new ExecutionSessionCompat(
+            this.sandbox,
+            sessionId,
+            cwd
+        );
+        
+        this.logger.debug('Created session wrapper', { sessionId, cwd });
+        return session;
     }
 
     /**
@@ -190,11 +218,7 @@ export class SandboxSdkClient extends BaseSandboxService {
      */
     private async getInstanceSession(instanceId: string, cwd?: string): Promise<ExecutionSession> {
         if (!this.sessionCache.has(instanceId)) {
-            if (instanceId === 'sandbox-default') {
-                cwd = '/workspace';
-            } else {
-                cwd = cwd || `/workspace/${instanceId}`;
-            }
+            cwd = cwd || `/workspace/${instanceId}`;
             const session = await this.getOrCreateSession(instanceId, cwd);
             this.sessionCache.set(instanceId, session);
         }
@@ -209,7 +233,7 @@ export class SandboxSdkClient extends BaseSandboxService {
         return await this.getInstanceSession('sandbox-default', '/workspace');
     }
 
-    private async executeCommand(instanceId: string, command: string, options?: {timeout?: number}): Promise<ExecResult> {
+    private async executeCommand(instanceId: string, command: string, options?: {timeout?: number}): Promise<ExecuteResponse> {
         const session = await this.getInstanceSession(instanceId);
         return await session.exec(command, options);
     }
@@ -217,9 +241,8 @@ export class SandboxSdkClient extends BaseSandboxService {
     /**
      * Safe wrapper for direct sandbox exec calls using default session
      */
-    private async safeSandboxExec(command: string, options?: {timeout?: number}): Promise<ExecResult> {
-        const session = await this.getDefaultSession();
-        return await session.exec(command, options);
+    private async safeSandboxExec(command: string, options?: {timeout?: number}): Promise<ExecuteResponse> {
+        return await this.executeCommand('sandbox-default', command, options);
     }
 
     /**
@@ -303,7 +326,7 @@ export class SandboxSdkClient extends BaseSandboxService {
             }
 
             // Execute with bash
-            const { stdout, stderr } = await session.exec(`bash ${scriptPath}`, { timeout: 60000 });
+            const { exitCode, stdout, stderr } = await session.exec(`bash ${scriptPath}`, { timeout: 60000 });
             
             // Parse results from output
             const output = stdout + stderr;
@@ -1289,7 +1312,7 @@ export class SandboxSdkClient extends BaseSandboxService {
 
             // Use batch script for efficient writing (3 requests for any number of files)
             const filesToWrite = filteredFiles.map(file => ({
-                path: `/workspace/${instanceId}/${file.filePath}`,
+                path: `${file.filePath}`,
                 content: file.fileContents
             }));
             
@@ -1783,6 +1806,64 @@ export class SandboxSdkClient extends BaseSandboxService {
         }
     }
 
+    // Development utility method for fixing code issues
+    async fixCodeIssues(instanceId: string, allFiles?: FileObject[]): Promise<CodeFixResult> {
+        try {
+            this.logger.info(`Fixing code issues for ${instanceId}`);
+            // First run static analysis
+            const analysisResult = await this.runStaticAnalysisCode(instanceId);
+            this.logger.info(`Static analysis completed for ${instanceId}`);
+            // Then get all the files
+            const files = allFiles || (await this.getFiles(instanceId)).files;
+            this.logger.info(`Files retrieved for ${instanceId}`);
+            
+            // Create file fetcher callback
+            const session = await this.getInstanceSession(instanceId);
+            const fileFetcher: FileFetcher = async (filePath: string) => {
+                // Fetch a single file from the instance
+                try {
+                    const result = await session.readFile(`/workspace/${instanceId}/${filePath}`);  
+                    if (result.success) {
+                        this.logger.info(`Successfully fetched file: ${filePath}`);
+                        return {
+                            filePath: filePath,
+                            fileContents: result.content,
+                            filePurpose: `Fetched file: ${filePath}`
+                        };
+                    } else {
+                        this.logger.debug(`File not found: ${filePath}`);
+                    }
+                } catch (error) {
+                    this.logger.debug(`Failed to fetch file ${filePath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+                }
+                return null;
+            };
+
+            // Use the new functional API
+            const fixResult = await fixProjectIssues(
+                files.map(file => ({
+                    filePath: file.filePath,
+                    fileContents: file.fileContents,
+                    filePurpose: ''
+                })),
+                analysisResult.typecheck.issues,
+                fileFetcher
+            );
+            for (const file of fixResult.modifiedFiles) {
+                await session.writeFile(`/workspace/${instanceId}/${file.filePath}`, file.fileContents);
+            }
+            this.logger.info(`Code fix completed for ${instanceId}`);
+            return fixResult;
+        } catch (error) {
+            this.logger.error('fixCodeIssues', error, { instanceId });
+            return {
+                fixedIssues: [],
+                unfixableIssues: [],
+                modifiedFiles: []
+            };
+        }
+    }
+
     private mapESLintSeverity(severity: number): LintSeverity {
         switch (severity) {
             case 1: return 'warning';
@@ -2112,5 +2193,270 @@ export class SandboxSdkClient extends BaseSandboxService {
         throw new Error(`Git rev-parse failed: ${hashResult.stderr}`);
     }
 
+    /**
+     * Push files to GitHub using secure API-based approach
+     * Extracts git context from sandbox and delegates to GitHubService
+     */
+    async pushToGitHub(instanceId: string, request: GitHubPushRequest, allFiles: FileOutputType[]): Promise<GitHubPushResponse> {
+        // Validate required parameters
+        if (!instanceId?.trim()) {
+            return {
+                success: false,
+                error: 'Instance ID is required'
+            };
+        }
 
+        if (!request?.cloneUrl?.trim()) {
+            return {
+                success: false,
+                error: 'Clone URL is required'
+            };
+        }
+
+        if (!request?.token?.trim()) {
+            return {
+                success: false,
+                error: 'GitHub token is required'
+            };
+        }
+
+        if (!request?.email?.trim() || !request?.username?.trim()) {
+            return {
+                success: false,
+                error: 'Git user email and username are required'
+            };
+        }
+
+        try {
+            this.logger.info(`Starting GitHub push for instance ${instanceId}`);
+
+            // Extract git context from local repository
+            const gitContext = await this.extractGitContext(instanceId);
+            
+            if (!gitContext.isGitRepo) {
+                this.logger.error('No git repository found in sandbox');
+                return {
+                    success: false,
+                    error: 'No git repository found in sandbox instance'
+                };
+            }
+
+            // Auto-commit any uncommitted or untracked changes before push
+            let finalGitContext = gitContext;
+            if (gitContext.hasUncommittedChanges || gitContext.hasUntrackedFiles) {
+                this.logger.info('Auto-committing changes before GitHub push', {
+                    hasUncommittedChanges: gitContext.hasUncommittedChanges,
+                    hasUntrackedFiles: gitContext.hasUntrackedFiles,
+                    untrackedFileCount: gitContext.untrackedFiles.length
+                });
+                
+                try {
+                    // Auto-commit all changes
+                    await this.createLatestCommit(instanceId, 'Auto-commit before GitHub push');
+                    
+                    // Re-extract git context after commit
+                    finalGitContext = await this.extractGitContext(instanceId);
+                    this.logger.info('Auto-commit successful', {
+                        newCommitCount: finalGitContext.localCommits.length
+                    });
+                } catch (error) {
+                    this.logger.error('Auto-commit failed', error);
+                    return {
+                        success: false,
+                        error: `Failed to auto-commit changes: ${error instanceof Error ? error.message : 'Unknown error'}`
+                    };
+                }
+            }
+
+            // Use broader file selection - all files if we have any, otherwise tracked files
+            const filesToUse = finalGitContext.allFiles.length > 0 ? finalGitContext.allFiles : finalGitContext.trackedFiles;
+            const filesToUseSet = new Set(filesToUse);
+            const cachedFiles = allFiles.filter(file => filesToUseSet.has(file.filePath) && file.fileContents.trim() !== '[REDACTED]');
+            const cachedFilePaths = new Set(cachedFiles.map((file: {filePath: string; fileContents: string}) => file.filePath));
+            const filesToFetch = filesToUse.filter((file: string) => !cachedFilePaths.has(file));
+            const filesNotCached = await this.getFileDirect(instanceId, filesToFetch);
+            const files = [...cachedFiles, ...filesNotCached];
+
+            this.logger.info(`Total files to push: ${files.length}`, {
+                cachedFilePaths,
+                filesToFetch,
+                filesToUse,
+            });
+            
+            if (files.length === 0) {
+                this.logger.warn('No files found to push');
+                return {
+                    success: true,
+                    commitSha: undefined
+                };
+            }
+
+            // Delegate to secure GitHub service
+            const result = await GitHubService.pushFilesToRepository(files, request, {
+                localCommits: finalGitContext.localCommits,
+                hasUncommittedChanges: finalGitContext.hasUncommittedChanges
+            });
+            
+            this.logger.info('GitHub push completed', { 
+                instanceId, 
+                success: result.success, 
+                commitSha: result.commitSha,
+                localCommitCount: finalGitContext.localCommits.length,
+                fileCount: files.length
+            });
+
+            return result;
+
+        } catch (error) {
+            this.logger.error('pushToGitHub failed', error, { instanceId, repositoryUrl: request.repositoryHtmlUrl });
+            
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            
+            return {
+                success: false,
+                error: `Secure GitHub push failed: ${errorMessage}`,
+                details: {
+                    operation: 'secure_api_push',
+                    stderr: errorMessage
+                }
+            };
+        }
+    }
+
+    /**
+     * Read contents of any file
+     */
+    private async getFileDirect(instanceId: string, filePaths: string[]): Promise<{
+        filePath: string;
+        fileContents: string;
+    }[]> {
+        const files: { filePath: string; fileContents: string; }[] = [];
+        const session = await this.getInstanceSession(instanceId);
+
+        this.logger.info(`Reading ${filePaths.length} files`, { instanceId });
+
+        for (const filePath of filePaths) {
+            try {
+                const readResult = await session.readFile(`/workspace/${instanceId}/${filePath}`);
+                if (readResult.success && readResult.content) {
+                    files.push({
+                        filePath,
+                        fileContents: readResult.content
+                    });
+                    this.logger.debug(`Successfully read file: ${filePath}`, { sizeBytes: readResult.content.length });
+                } else {
+                    this.logger.warn(`File read failed or empty: ${filePath}`);
+                }
+            } catch (error) {
+                this.logger.warn(`Failed to read file ${filePath}`, error);
+            }
+        }
+
+        this.logger.info(`Successfully read ${files.length}/${filePaths.length} files`);
+        return files;
+    }
+
+    /**
+     * Extract git history and file tracking information from local repository
+     */
+    private async extractGitContext(instanceId: string): Promise<{
+        localCommits: Array<{
+            hash: string;
+            message: string;
+            timestamp: string;
+        }>;
+        trackedFiles: string[];
+        untrackedFiles: string[];
+        allFiles: string[];
+        hasUncommittedChanges: boolean;
+        hasUntrackedFiles: boolean;
+        isGitRepo: boolean;
+    }> {
+        try {
+            // First check if this is even a git repository
+            const gitCheckResult = await this.executeCommand(instanceId, 'git status');
+            if (gitCheckResult.exitCode !== 0) {
+                this.logger.warn('Not a git repository or git not initialized', { instanceId });
+                return {
+                    localCommits: [],
+                    trackedFiles: [],
+                    untrackedFiles: [],
+                    allFiles: [],
+                    hasUncommittedChanges: false,
+                    hasUntrackedFiles: false,
+                    isGitRepo: false
+                };
+            }
+
+            // Get full commit history (oldest first to preserve order for GitHub)
+            const logResult = await this.executeCommand(instanceId, 'git log --oneline --reverse --pretty=format:"%H|%s|%cI"');
+            const localCommits: Array<{hash: string; message: string; timestamp: string}> = [];
+            
+            if (logResult.exitCode === 0 && logResult.stdout.trim()) {
+                const commitLines = logResult.stdout.trim().split('\n');
+                for (const line of commitLines) {
+                    const [hash, message, timestamp] = (line as string).split('|');
+                    if (hash && message) {
+                        localCommits.push({
+                            hash: hash.trim(),
+                            message: message.trim(),
+                            timestamp: timestamp?.trim() || new Date().toISOString()
+                        });
+                    }
+                }
+            }
+
+            // Get git-tracked files (respects .gitignore)
+            const lsFilesResult = await this.executeCommand(instanceId, 'git ls-files');
+            const trackedFiles = lsFilesResult.exitCode === 0 
+                ? lsFilesResult.stdout.trim().split('\n').filter((f: string) => f.trim())
+                : [];
+
+            // Get untracked files (respects .gitignore)
+            const untrackedResult = await this.executeCommand(instanceId, 'git ls-files --others --exclude-standard');
+            const untrackedFiles = untrackedResult.exitCode === 0
+                ? untrackedResult.stdout.trim().split('\n').filter((f: string) => f.trim())
+                : [];
+
+            // Combine all files
+            const allFiles = [...trackedFiles, ...untrackedFiles];
+
+            // Check if there are uncommitted changes (staged or modified)
+            const statusResult = await this.executeCommand(instanceId, 'git status --porcelain');
+            const hasUncommittedChanges = statusResult.exitCode === 0 && statusResult.stdout.trim().length > 0;
+            const hasUntrackedFiles = untrackedFiles.length > 0;
+
+            this.logger.info('Full git context extracted', {
+                instanceId,
+                localCommitCount: localCommits.length,
+                trackedFileCount: trackedFiles.length,
+                untrackedFileCount: untrackedFiles.length,
+                totalFileCount: allFiles.length,
+                hasUncommittedChanges,
+                hasUntrackedFiles,
+                latestCommit: localCommits[localCommits.length - 1]?.message
+            });
+
+            return { 
+                localCommits, 
+                trackedFiles,
+                untrackedFiles,
+                allFiles,
+                hasUncommittedChanges,
+                hasUntrackedFiles,
+                isGitRepo: true 
+            };
+        } catch (error) {
+            this.logger.warn('Failed to extract git context, using defaults', error);
+            return {
+                localCommits: [],
+                trackedFiles: [],
+                untrackedFiles: [],
+                allFiles: [],
+                hasUncommittedChanges: false,
+                hasUntrackedFiles: false,
+                isGitRepo: false
+            };
+        }
+    }
 }

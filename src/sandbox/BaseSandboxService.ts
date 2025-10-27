@@ -27,42 +27,42 @@ import {
     
     GetLogsResponse,
     ListInstancesResponse,
-    GitHubPushRequest,
-    GitHubPushResponse,
     TemplateDetails,
-  } from './sandboxTypes';
+} from './sandboxTypes';
   
-  import { createObjectLogger, StructuredLogger } from '../logger';
-  import { env } from 'cloudflare:workers'
-import { FileOutputType } from '@/schemas';
+import { createObjectLogger, StructuredLogger } from '../logger';
+import { env } from 'cloudflare:workers'
 import { ZipExtractor } from './zipExtractor';
 import { FileTreeBuilder } from './fileTreeBuilder';
-  /**
-   * Streaming event for enhanced command execution
-   */
-  export interface StreamEvent {
+
+/**
+ * Streaming event for enhanced command execution
+ */
+export interface StreamEvent {
     type: 'stdout' | 'stderr' | 'exit' | 'error';
     data?: string;
     code?: number;
     error?: string;
     timestamp: Date;
-  }
+}
   
-  export interface TemplateInfo {
-      name: string;
-      language?: string;
-      frameworks?: string[];
-      description: {
-          selection: string;
-          usage: string;
-      };
-  }
+export interface TemplateInfo {
+    name: string;
+    language?: string;
+    frameworks?: string[];
+    description: {
+        selection: string;
+        usage: string;
+    };
+}
+
+const templateDetailsCache: Record<string, TemplateDetails> = {};
   
-  /**
-   * Abstract base class providing complete RunnerService API compatibility
-   * All implementations MUST support every method defined here
-   */
-  export abstract class BaseSandboxService {
+/**
+ * Abstract base class providing complete RunnerService API compatibility
+ * All implementations MUST support every method defined here
+*/
+export abstract class BaseSandboxService {
     protected logger: StructuredLogger;
     protected sandboxId: string;
   
@@ -114,13 +114,20 @@ import { FileTreeBuilder } from './fileTreeBuilder';
         }
     }
   
-      /**
-       * Get details for a specific template - fully in-memory, no sandbox operations
-       * Downloads zip from R2, extracts in memory, and returns all files with metadata
-       * Returns: { success: boolean, templateDetails?: {...}, error?: string }
-       */
-      static async getTemplateDetails(templateName: string, downloadDir?: string): Promise<TemplateDetailsResponse> {
+    /**
+     * Get details for a specific template - fully in-memory, no sandbox operations
+     * Downloads zip from R2, extracts in memory, and returns all files with metadata
+     * Returns: { success: boolean, templateDetails?: {...}, error?: string }
+     */
+    static async getTemplateDetails(templateName: string, downloadDir?: string): Promise<TemplateDetailsResponse> {
         try {
+            if (templateDetailsCache[templateName]) {
+                console.log(`Template details for template: ${templateName} found in cache`);
+                return {
+                    success: true,
+                    templateDetails: templateDetailsCache[templateName]
+                };
+            }
             // Download template zip from R2
             const downloadUrl = downloadDir ? `${downloadDir}/${templateName}.zip` : `${templateName}.zip`;
             const r2Object = await env.TEMPLATES_BUCKET.get(downloadUrl);
@@ -186,6 +193,8 @@ import { FileTreeBuilder } from './fileTreeBuilder';
                 frameworks: catalogInfo?.frameworks || []
             };
 
+            templateDetailsCache[templateName] = templateDetails;
+
             return {
                 success: true,
                 templateDetails
@@ -197,7 +206,7 @@ import { FileTreeBuilder } from './fileTreeBuilder';
             };
         }
     }
-  
+    
     // ==========================================
     // INSTANCE LIFECYCLE (Required)
     // ==========================================
@@ -248,7 +257,7 @@ import { FileTreeBuilder } from './fileTreeBuilder';
      */
     abstract getFiles(instanceId: string, filePaths?: string[]): Promise<GetFilesResponse>;
 
-    abstract getLogs(instanceId: string): Promise<GetLogsResponse>;
+    abstract getLogs(instanceId: string, onlyRecent?: boolean, durationSeconds?: number): Promise<GetLogsResponse>;
   
     // ==========================================
     // COMMAND EXECUTION (Required)
@@ -270,7 +279,7 @@ import { FileTreeBuilder } from './fileTreeBuilder';
      * Get all runtime errors from an instance
      * Returns: { success: boolean, errors: [...], hasErrors: boolean, error?: string }
      */
-    abstract getInstanceErrors(instanceId: string): Promise<RuntimeErrorResponse>;
+    abstract getInstanceErrors(instanceId: string, clear?: boolean): Promise<RuntimeErrorResponse>;
   
     /**
      * Clear all runtime errors from an instance
@@ -302,8 +311,4 @@ import { FileTreeBuilder } from './fileTreeBuilder';
     // GITHUB INTEGRATION (Required)
     // ==========================================
 
-    /**
-     * Push instance files to existing GitHub repository
-     */
-    abstract pushToGitHub(instanceId: string, request: GitHubPushRequest, files: FileOutputType[]): Promise<GitHubPushResponse>
-  }
+}

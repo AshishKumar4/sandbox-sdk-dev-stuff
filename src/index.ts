@@ -1,6 +1,5 @@
 
 import { createLogger } from './logger';
-import { proxyToSandbox } from "@cloudflare/sandbox";
 import { isDispatcherAvailable } from './utils/dispatcherUtils';
 import { Hono } from 'hono';
 import { SandboxSdkClient } from './sandbox/sandboxSdkClient';
@@ -15,6 +14,7 @@ import {
 import { getPreviewDomain } from "./utils/urls";
 import { FileOutputType } from './schemas';
 import { BaseSandboxService } from './sandbox/BaseSandboxService';
+import { proxyToSandbox } from './sandbox/request-handler';
 
 // Export the Sandbox class in your Worker
 export { Sandbox as UserAppSandboxService, Sandbox as DeployerService, Sandbox} from "@cloudflare/sandbox";
@@ -271,19 +271,19 @@ const processController = {
     }
   },
 
-  async fixCodeIssues(c: any) {
-    try {
-      const instanceId = c.req.param('id');
-      const client = await getClientForSession(c);
-      const response = await client.fixCodeIssues(instanceId);
-      return c.json(response);
-    } catch (error) {
-      return c.json({ 
-        success: false, 
-        error: `Failed to fix code issues: ${error instanceof Error ? error.message : 'Unknown error'}` 
-      }, 500);
-    }
-  },
+//   async fixCodeIssues(c: any) {
+//     try {
+//       const instanceId = c.req.param('id');
+//       const client = await getClientForSession(c);
+//       const response = await client.fixCodeIssues(instanceId);
+//       return c.json(response);
+//     } catch (error) {
+//       return c.json({ 
+//         success: false, 
+//         error: `Failed to fix code issues: ${error instanceof Error ? error.message : 'Unknown error'}` 
+//       }, 500);
+//     }
+//   },
 
   async getLogs(c: any) {
     try {
@@ -330,25 +330,6 @@ const deploymentController = {
   }
 };
 
-// GitHub controllers
-const githubController = {
-  async pushToGitHub(c: any) {
-    try {
-      const instanceId = c.req.param('id');
-      const body = await c.req.json();
-      const validatedBody = body as { request: GitHubPushRequest, files: FileOutputType[] };
-      const client = await getClientForSession(c);
-      const response = await client.pushToGitHub(instanceId, validatedBody.request, validatedBody.files);
-      return c.json(response);
-    } catch (error) {
-      return c.json({ 
-        success: false, 
-        error: `Failed to push to GitHub: ${error instanceof Error ? error.message : 'Unknown error'}` 
-      }, 500);
-    }
-  }
-};
-
 const app = new Hono<{ Bindings: Env }>();
 
 // Auth middleware - simple token-based authentication
@@ -390,14 +371,10 @@ app.get('/instances/:id/errors', processController.detectErrors);
 app.delete('/instances/:id/errors', processController.clearErrors);
 app.get('/instances/:id/analysis', processController.analyzeCode);
 app.get('/instances/:id/logs', processController.getLogs);
-app.post('/instances/:id/code-fix', processController.fixCodeIssues);
 
 // Deployment routes
 app.post('/instances/:id/deploy', deploymentController.deployInstance);
 app.get('/instances/:id/deploy', deploymentController.getInstanceDeploymentInfo);
-
-// GitHub integration routes
-app.post('/instances/:id/github/push', githubController.pushToGitHub);
 
 // Logger for the main application and handlers
 const logger = createLogger('App');
